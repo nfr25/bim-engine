@@ -40,11 +40,12 @@ The engine relies on a clean, relational structure to bridge the gap between CAD
 | `bim_blobs` | Storage for complex DXF entities and geometry |
 | `bim_selection` | Temporary registry for currently selected IDs |
 
-![DB Schema](doc/db_struct.jpg)
+
+![Database Schema](screenshots/db_schema.png)
 
 ## 📸 Screenshots
 
-![BimEngine Main View](screenshots/main_view.png)
+![BimEngine UI](screenshots/app_view.png)
 *Current build showing Cairo rendering, spatial selection, and dynamic labels.*
 
 ## 🛠 Compilation & Usage
