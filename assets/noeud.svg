@@ -1,0 +1,6 @@
+<svg xmlns='http://www.w3.org/2000/svg' viewBox='-25 -25 50 50'>
+<line x1='-20' y1='0' x2='-12' y2='0' stroke='#4db8ff' stroke-width='2' stroke-linecap='round'/>
+<line x1='12' y1='0' x2='20' y2='0' stroke='#4db8ff' stroke-width='2' stroke-linecap='round'/>
+<circle cx='0' cy='0' r='12' fill='#0d2035' stroke='#4db8ff' stroke-width='2'/>
+<polygon points='0,-8 8,4 -8,4' fill='#4db8ff' opacity='0.8'/>
+</svg>

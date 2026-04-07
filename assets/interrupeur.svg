@@ -1,0 +1,7 @@
+<svg xmlns='http://www.w3.org/2000/svg' viewBox='-25 -25 50 50'>
+<line x1='-20' y1='0' x2='-8' y2='0' stroke='#ffcc44' stroke-width='2' stroke-linecap='round'/>
+<line x1='8' y1='0' x2='20' y2='0' stroke='#ffcc44' stroke-width='2' stroke-linecap='round'/>
+<circle cx='-8' cy='0' r='2.5' fill='#ffcc44'/>
+<line x1='-8' y1='0' x2='7' y2='-10' stroke='#ffcc44' stroke-width='2' stroke-linecap='round'/>
+<circle cx='8' cy='0' r='2.5' fill='none' stroke='#ffcc44' stroke-width='1.5'/>
+</svg>

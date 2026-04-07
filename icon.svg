@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- Fond -->
+  <rect width="64" height="64" rx="8" fill="#13141a"/>
+  <!-- Réseau — 3 nœuds reliés -->
+  <line x1="16" y1="48" x2="32" y2="20" stroke="#4db8ff" stroke-width="3" stroke-linecap="round"/>
+  <line x1="32" y1="20" x2="48" y2="48" stroke="#4db8ff" stroke-width="3" stroke-linecap="round"/>
+  <line x1="16" y1="48" x2="48" y2="48" stroke="#4db8ff" stroke-width="3" stroke-linecap="round"/>
+  <!-- Nœuds -->
+  <circle cx="32" cy="20" r="5" fill="#13141a" stroke="#4db8ff" stroke-width="2"/>
+  <circle cx="16" cy="48" r="5" fill="#13141a" stroke="#4db8ff" stroke-width="2"/>
+  <circle cx="48" cy="48" r="5" fill="#13141a" stroke="#4db8ff" stroke-width="2"/>
+  <!-- Nœud central actif -->
+  <circle cx="32" cy="34" r="4" fill="#4db8ff"/>
+</svg>
