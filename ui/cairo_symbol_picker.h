@@ -59,6 +59,8 @@
 #ifndef CAIRO_SYMBOL_PICKER_H
 #define CAIRO_SYMBOL_PICKER_H
 
+#include "ui_backend.h"
+
 #include <windows.h>
 #include <windowsx.h>
 #include <cairo/cairo.h>
@@ -310,10 +312,8 @@ static void csp__draw_ports(cairo_t *cr, int ports_mask,
 }
 
 /* ── Rendu principal ─────────────────────────────────────────────────── */
-static void csp__render(CspState *st, HDC hdc, int w, int h)
+static void csp__render(CspState *st, cairo_t *cr, int w, int h)
 {
-    cairo_surface_t *surf = cairo_win32_surface_create(hdc);
-    cairo_t         *cr   = cairo_create(surf);
 
     /* Fond */
     csp__col_bg(cr, 1.0);
@@ -589,8 +589,6 @@ static void csp__render(CspState *st, HDC hdc, int w, int h)
     SetRect(&st->rc_apply, (int)apply_x, (int)btn_y,
             (int)(apply_x+CSP_BTN_W), (int)(btn_y+CSP_BTN_H));
 
-    cairo_destroy(cr);
-    cairo_surface_destroy(surf);
 }
 
 /* ── Hit testing ─────────────────────────────────────────────────────── */
@@ -607,18 +605,9 @@ static LRESULT CALLBACK csp__dlg_proc(HWND hwnd, UINT msg,
 
     switch (msg) {
     case WM_PAINT: {
-        PAINTSTRUCT ps;
-        HDC hdc = BeginPaint(hwnd, &ps);
-        RECT rc; GetClientRect(hwnd, &rc);
-        int cw = rc.right, ch = rc.bottom;
-        HDC mem = CreateCompatibleDC(hdc);
-        HBITMAP bmp = CreateCompatibleBitmap(hdc, cw, ch);
-        HBITMAP old = (HBITMAP)SelectObject(mem, bmp);
-        if (st) csp__render(st, mem, cw, ch);
-        BitBlt(hdc, 0, 0, cw, ch, mem, 0, 0, SRCCOPY);
-        SelectObject(mem, old);
-        DeleteObject(bmp); DeleteDC(mem);
-        EndPaint(hwnd, &ps);
+        UI_PAINT_BEGIN(hwnd, ctx);
+            if (st) csp__render(st, ctx.cr, ctx.w, ctx.h);
+        UI_PAINT_END(hwnd, ctx);
         return 0;
     }
     case WM_MOUSEMOVE: {
@@ -629,7 +618,7 @@ static LRESULT CALLBACK csp__dlg_proc(HWND hwnd, UINT msg,
         for (int i = 0; i < st->sym_count; i++)
             if (csp__pt_in(&st->rc_thumbs[i], mx, my))
                 st->hovered = i;
-        if (st->hovered != prev) InvalidateRect(hwnd, NULL, FALSE);
+        if (st->hovered != prev) ui_redraw(hwnd);
         return 0;
     }
     case WM_LBUTTONDOWN: {
@@ -639,20 +628,20 @@ static LRESULT CALLBACK csp__dlg_proc(HWND hwnd, UINT msg,
         for (int i = 0; i < st->sym_count; i++) {
             if (csp__pt_in(&st->rc_thumbs[i], mx, my)) {
                 st->selected = i;
-                InvalidateRect(hwnd, NULL, FALSE);
+                ui_redraw(hwnd);
                 return 0;
             }
         }
         if (csp__pt_in(&st->rc_rot_left, mx, my)) {
             st->angle -= M_PI / 2.0;
             if (st->angle < 0) st->angle += 2 * M_PI;
-            InvalidateRect(hwnd, NULL, FALSE);
+            ui_redraw(hwnd);
             return 0;
         }
         if (csp__pt_in(&st->rc_rot_right, mx, my)) {
             st->angle += M_PI / 2.0;
             if (st->angle >= 2 * M_PI) st->angle -= 2 * M_PI;
-            InvalidateRect(hwnd, NULL, FALSE);
+            ui_redraw(hwnd);
             return 0;
         }
         if (csp__pt_in(&st->rc_cancel, mx, my)) {
@@ -691,7 +680,7 @@ static LRESULT CALLBACK csp__dlg_proc(HWND hwnd, UINT msg,
         int max_scroll = st->grid_rows
             * (CSP_THUMB_H + CSP_THUMB_PAD + CSP_THUMB_LABEL);
         if (st->scroll_y > max_scroll) st->scroll_y = max_scroll;
-        InvalidateRect(hwnd, NULL, FALSE);
+        ui_redraw(hwnd);
         return 0;
     }
     case WM_KEYDOWN:
@@ -708,24 +697,24 @@ static LRESULT CALLBACK csp__dlg_proc(HWND hwnd, UINT msg,
             break;
         case VK_LEFT:
             if (st->selected > 0)
-                { st->selected--; InvalidateRect(hwnd, NULL, FALSE); }
+                { st->selected--; ui_redraw(hwnd); }
             break;
         case VK_RIGHT:
             if (st->selected < st->sym_count - 1)
-                { st->selected++; InvalidateRect(hwnd, NULL, FALSE); }
+                { st->selected++; ui_redraw(hwnd); }
             break;
         case VK_UP:
             if (st->selected >= CSP_COLS)
-                { st->selected -= CSP_COLS; InvalidateRect(hwnd, NULL, FALSE); }
+                { st->selected -= CSP_COLS; ui_redraw(hwnd); }
             break;
         case VK_DOWN:
             if (st->selected + CSP_COLS < st->sym_count)
-                { st->selected += CSP_COLS; InvalidateRect(hwnd, NULL, FALSE); }
+                { st->selected += CSP_COLS; ui_redraw(hwnd); }
             break;
         case 'R':
             st->angle += M_PI / 2.0;
             if (st->angle >= 2 * M_PI) st->angle -= 2 * M_PI;
-            InvalidateRect(hwnd, NULL, FALSE);
+            ui_redraw(hwnd);
             break;
         }
         return 0;
@@ -769,7 +758,6 @@ int csp_pick(HWND parent, const CspSymbol *symbols, CspResult *result)
     SetRectEmpty(&st.rc_rot_left);
     SetRectEmpty(&st.rc_rot_right);
 
-    HINSTANCE hi = (HINSTANCE)GetWindowLongPtr(parent, GWLP_HINSTANCE);
 
     static int reg = 0;
     if (!reg) {
@@ -777,33 +765,22 @@ int csp_pick(HWND parent, const CspSymbol *symbols, CspResult *result)
         WNDCLASSEX wc = {0};
         wc.cbSize        = sizeof wc;
         wc.style         = CS_HREDRAW | CS_VREDRAW | CS_DBLCLKS;
-        wc.lpfnWndProc   = csp__dlg_proc;
-        wc.hInstance     = hi;
-        wc.hCursor       = LoadCursor(NULL, IDC_ARROW);
-        wc.hbrBackground = (HBRUSH)GetStockObject(BLACK_BRUSH);
-        wc.lpszClassName = "CSP_Dialog";
-        RegisterClassEx(&wc);
+        ui_register_class("CSP_Dialog", csp__dlg_proc, CS_DBLCLKS, NULL);
     }
 
     RECT pr; GetWindowRect(parent, &pr);
     int x = pr.left + (pr.right  - pr.left  - CSP_W) / 2;
     int y = pr.top  + (pr.bottom - pr.top   - CSP_H) / 2;
 
-    HWND hwnd = CreateWindowEx(
-        WS_EX_DLGMODALFRAME | WS_EX_TOPMOST,
-        "CSP_Dialog", "S\xc3\xa9lection de symbole",
-        WS_POPUP | WS_CAPTION | WS_SYSMENU,
+    HWND hwnd = ui_popup_create("CSP_Dialog", parent,
         x, y, CSP_W, CSP_H,
-        parent, NULL, hi, NULL);
-
-    SetWindowLongPtr(hwnd, GWLP_USERDATA, (LONG_PTR)&st);
+        WS_EX_DLGMODALFRAME | WS_EX_TOPMOST, &st);
 
     EnableWindow(parent, FALSE);
     ShowWindow(hwnd, SW_SHOW);
 
     /* Dark mode titlebar */
-    BOOL dark = TRUE;
-    DwmSetWindowAttribute(hwnd, 20, &dark, sizeof dark);
+    ui_set_dark_mode(hwnd);
 
     UpdateWindow(hwnd);
 

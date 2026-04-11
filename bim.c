@@ -26,6 +26,7 @@
 #define _USE_MATH_DEFINES
 #include <math.h>
 //cairo UI
+#include "ui_backend.h"
 #define CAIRO_MENU_IMPLEMENTATION
 #include "cairo_menu.h"
 #define CAIRO_TRANSCRIPT_IMPLEMENTATION

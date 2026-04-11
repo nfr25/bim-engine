@@ -63,6 +63,8 @@
 #ifndef CAIRO_STYLE_EDITOR_H
 #define CAIRO_STYLE_EDITOR_H
 
+#include "ui_backend.h"
+
 #include <windows.h>
 #include <windowsx.h>
 #include <dwmapi.h>
@@ -496,10 +498,8 @@ static void cse__draw_preview(cairo_t *cr, double x, double y,
 }
 
 /* ── Rendu principal du dialogue ─────────────────────────────────── */
-static void cse__render(CseState *st, HDC hdc, int w, int h)
+static void cse__render(CseState *st, cairo_t *cr, int w, int h)
 {
-    cairo_surface_t *surf = cairo_win32_surface_create(hdc);
-    cairo_t         *cr   = cairo_create(surf);
 
     /* Fond global */
     cse__col_bg(cr, 1.0);
@@ -630,8 +630,6 @@ static void cse__render(CseState *st, HDC hdc, int w, int h)
     cairo_line_to(cr, w, btn_y - 8);
     cairo_stroke(cr);
 
-    cairo_destroy(cr);
-    cairo_surface_destroy(surf);
 }
 
 /* ── Hit testing ─────────────────────────────────────────────────── */
@@ -667,19 +665,9 @@ static LRESULT CALLBACK cse__dlg_proc(HWND hwnd, UINT msg,
         return 0;
     }
     case WM_PAINT: {
-        PAINTSTRUCT ps;
-        HDC hdc = BeginPaint(hwnd, &ps);
-        RECT rc; GetClientRect(hwnd, &rc);
-        int w = rc.right, h = rc.bottom;
-
-        HDC mem = CreateCompatibleDC(hdc);
-        HBITMAP bmp = CreateCompatibleBitmap(hdc, w, h);
-        HBITMAP old = (HBITMAP)SelectObject(mem, bmp);
-        cse__render(st, mem, w, h);
-        BitBlt(hdc, 0, 0, w, h, mem, 0, 0, SRCCOPY);
-        SelectObject(mem, old);
-        DeleteObject(bmp); DeleteDC(mem);
-        EndPaint(hwnd, &ps);
+        UI_PAINT_BEGIN(hwnd, ctx);
+            cse__render(st, ctx.cr, ctx.w, ctx.h);
+        UI_PAINT_END(hwnd, ctx);
         return 0;
     }
     case WM_MOUSEMOVE: {
@@ -707,7 +695,7 @@ static LRESULT CALLBACK cse__dlg_proc(HWND hwnd, UINT msg,
             st->work.alpha = cse__slider_val(&st->rc_slider_alpha, mx, 0.0, 1.0);
 
         if (st->hovered_id != prev || st->dragging_width || st->dragging_alpha)
-            InvalidateRect(hwnd, NULL, FALSE);
+            ui_redraw(hwnd);
         return 0;
     }
     case WM_LBUTTONDOWN: {
@@ -718,34 +706,34 @@ static LRESULT CALLBACK cse__dlg_proc(HWND hwnd, UINT msg,
             st->dragging_width = 1;
             st->work.stroke_width = cse__slider_val(&st->rc_slider_width,
                                                      mx, 0.5, 10.0);
-            InvalidateRect(hwnd, NULL, FALSE);
+            ui_redraw(hwnd);
         }
         else if (cse__pt_in_rect(&st->rc_slider_alpha, mx, my)) {
             st->dragging_alpha = 1;
             st->work.alpha = cse__slider_val(&st->rc_slider_alpha, mx, 0.0, 1.0);
-            InvalidateRect(hwnd, NULL, FALSE);
+            ui_redraw(hwnd);
         }
         else if (cse__pt_in_rect(&st->rc_stroke_btn, mx, my)) {
             cse__pick_color(hwnd, &st->work.stroke_r,
                                   &st->work.stroke_g,
                                   &st->work.stroke_b);
-            InvalidateRect(hwnd, NULL, FALSE);
+            ui_redraw(hwnd);
         }
         else if (cse__pt_in_rect(&st->rc_fill_btn, mx, my)) {
             cse__pick_color(hwnd, &st->work.fill_r,
                                   &st->work.fill_g,
                                   &st->work.fill_b);
-            InvalidateRect(hwnd, NULL, FALSE);
+            ui_redraw(hwnd);
         }
         else if (cse__pt_in_rect(&st->rc_fill_check, mx, my)) {
             st->work.fill_active = !st->work.fill_active;
-            InvalidateRect(hwnd, NULL, FALSE);
+            ui_redraw(hwnd);
         }
         else {
             for (int i = 0; i < STROKE_COUNT; i++)
                 if (cse__pt_in_rect(&st->rc_stroke_style[i], mx, my)) {
                     st->work.stroke_style = (StrokeStyle)i;
-                    InvalidateRect(hwnd, NULL, FALSE);
+                    ui_redraw(hwnd);
                 }
         }
         return 0;
@@ -796,7 +784,6 @@ int cse_edit(HWND parent, Style *style)
     st.target  = style;
     st.applied = 0;
 
-    HINSTANCE hi = (HINSTANCE)GetWindowLongPtr(parent, GWLP_HINSTANCE);
 
     /* Enregistrement classe (une seule fois) */
     static int reg = 0;
@@ -805,12 +792,7 @@ int cse_edit(HWND parent, Style *style)
         WNDCLASSEX wc = {0};
         wc.cbSize        = sizeof wc;
         wc.style         = CS_HREDRAW | CS_VREDRAW;
-        wc.lpfnWndProc   = cse__dlg_proc;
-        wc.hInstance     = hi;
-        wc.hCursor       = LoadCursor(NULL, IDC_ARROW);
-        wc.hbrBackground = (HBRUSH)GetStockObject(BLACK_BRUSH);
-        wc.lpszClassName = "CSE_Dialog";
-        RegisterClassEx(&wc);
+        ui_register_class("CSE_Dialog", cse__dlg_proc, 0, NULL);
     }
 
     /* Centrer sur le parent */
@@ -818,16 +800,11 @@ int cse_edit(HWND parent, Style *style)
     int x = pr.left + (pr.right  - pr.left  - CSE_W) / 2;
     int y = pr.top  + (pr.bottom - pr.top   - CSE_H) / 2;
 
-    HWND hwnd = CreateWindowEx(
-        WS_EX_DLGMODALFRAME | WS_EX_TOPMOST,
-        "CSE_Dialog", "Style",
-        WS_POPUP | WS_CAPTION | WS_SYSMENU,
+    HWND hwnd = ui_popup_create("CSE_Dialog", parent,
         x, y, CSE_W, CSE_H,
-        parent, NULL, hi, NULL);
-    BOOL dark = TRUE;
-    DwmSetWindowAttribute(parent, 20, &dark, sizeof dark);
- 
-    SetWindowLongPtr(hwnd, GWLP_USERDATA, (LONG_PTR)&st);
+        WS_EX_DLGMODALFRAME | WS_EX_TOPMOST, &st);
+    ShowWindow(hwnd, SW_SHOW);
+    ui_set_dark_mode(parent);
 
     /* Pré-remplir le nom dans l'Edit */
     HWND edit = GetDlgItem(hwnd, ID_NAME_EDIT);
@@ -837,7 +814,7 @@ int cse_edit(HWND parent, Style *style)
     EnableWindow(parent, FALSE);
     ShowWindow(hwnd, SW_SHOW);
 
-    DwmSetWindowAttribute(hwnd, 20, &dark, sizeof dark);    
+    ui_set_dark_mode(hwnd);
     UpdateWindow(hwnd);
 
     /* Boucle modale */

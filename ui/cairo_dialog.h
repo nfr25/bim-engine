@@ -213,10 +213,8 @@ static int cld__validate(CldField *f, const char *val)
 }
 
 /* ── Dessin fond + titre ─────────────────────────────────────────── */
-static void cld__draw(CldState *st, HDC hdc, int w, int h)
+static void cld__draw(CldState *st, cairo_t *cr, int w, int h)
 {
-    cairo_surface_t *surf = cairo_win32_surface_create(hdc);
-    cairo_t         *cr   = cairo_create(surf);
 
     /* Fond général */
     cld__col_bg(cr);
@@ -433,18 +431,9 @@ static LRESULT CALLBACK cld__proc(HWND hwnd, UINT msg,
 
     switch (msg) {
     case WM_PAINT: {
-        PAINTSTRUCT ps;
-        HDC hdc = BeginPaint(hwnd, &ps);
-        RECT rc; GetClientRect(hwnd, &rc);
-        int w = rc.right, h = rc.bottom;
-        HDC mem = CreateCompatibleDC(hdc);
-        HBITMAP bmp = CreateCompatibleBitmap(hdc, w, h);
-        HBITMAP old = (HBITMAP)SelectObject(mem, bmp);
-        if (st) cld__draw(st, mem, w, h);
-        BitBlt(hdc, 0, 0, w, h, mem, 0, 0, SRCCOPY);
-        SelectObject(mem, old);
-        DeleteObject(bmp); DeleteDC(mem);
-        EndPaint(hwnd, &ps);
+        UI_PAINT_BEGIN(hwnd, ctx);
+            if (st) cld__draw(st, ctx.cr, ctx.w, ctx.h);
+        UI_PAINT_END(hwnd, ctx);
         return 0;
     }
 
@@ -459,7 +448,7 @@ static LRESULT CALLBACK cld__proc(HWND hwnd, UINT msg,
         if (oh != st->ok_hovered || cah != st->cancel_hovered) {
             st->ok_hovered     = oh;
             st->cancel_hovered = cah;
-            InvalidateRect(hwnd, NULL, FALSE);
+            ui_redraw(hwnd);
         }
         TRACKMOUSEEVENT tme = {sizeof tme, TME_LEAVE, hwnd, 0};
         TrackMouseEvent(&tme);
@@ -469,7 +458,7 @@ static LRESULT CALLBACK cld__proc(HWND hwnd, UINT msg,
     case WM_MOUSELEAVE:
         if (st) {
             st->ok_hovered = st->cancel_hovered = 0;
-            InvalidateRect(hwnd, NULL, FALSE);
+            ui_redraw(hwnd);
         }
         return 0;
 
@@ -493,7 +482,7 @@ static LRESULT CALLBACK cld__proc(HWND hwnd, UINT msg,
             if (PtInRect(&rcb, (POINT){mx,my})) {
                 st->fields[i].value[0] = (st->fields[i].value[0]=='1') ? '0' : '1';
                 st->fields[i].value[1] = '\0';
-                InvalidateRect(hwnd, NULL, FALSE);
+                ui_redraw(hwnd);
             }
         }
         return 0;
@@ -512,7 +501,7 @@ static LRESULT CALLBACK cld__proc(HWND hwnd, UINT msg,
             SendMessage(hwnd, WM_COMMAND, MAKEWPARAM(IDCANCEL,BN_CLICKED), 0);
 
         st->ok_pressed = st->cancel_pressed = 0;
-        InvalidateRect(hwnd, NULL, FALSE);
+        ui_redraw(hwnd);
         return 0;
     }
 
@@ -548,7 +537,7 @@ static LRESULT CALLBACK cld__proc(HWND hwnd, UINT msg,
                 }
             }
             if (!all_ok) {
-                InvalidateRect(hwnd, NULL, FALSE);
+                ui_redraw(hwnd);
                 return 0;
             }
             st->result = 1;
@@ -571,7 +560,7 @@ static LRESULT CALLBACK cld__proc(HWND hwnd, UINT msg,
                     int was = st->field_valid[i];
                     st->field_valid[i] = cld__validate(&st->fields[i], buf);
                     if (st->field_valid[i] != was)
-                        InvalidateRect(hwnd, NULL, FALSE);
+                        ui_redraw(hwnd);
                     break;
                 }
             }
@@ -613,18 +602,12 @@ static void cld__register(HINSTANCE hi)
     WNDCLASSEX wc = {0};
     wc.cbSize        = sizeof wc;
     wc.style         = CS_HREDRAW | CS_VREDRAW;
-    wc.lpfnWndProc   = cld__proc;
-    wc.hInstance     = hi;
-    wc.hCursor       = LoadCursor(NULL, IDC_ARROW);
-    wc.hbrBackground = (HBRUSH)GetStockObject(BLACK_BRUSH);
-    wc.lpszClassName = "CLD_Dialog";
-    RegisterClassEx(&wc);
+    ui_register_class("CLD_Dialog", cld__proc, 0, NULL);
 }
 
 /* ── Création des contrôles Win32 ────────────────────────────────── */
 static void cld__create_controls(HWND hwnd, CldState *st, int w)
 {
-    HINSTANCE hi = (HINSTANCE)GetWindowLongPtr(hwnd, GWLP_HINSTANCE);
     int fy = cld__fields_y(st->message != NULL);
 
     /* Police monospace pour les edits */
@@ -696,7 +679,6 @@ static void cld__create_controls(HWND hwnd, CldState *st, int w)
 int cld_show(HWND parent, const char *title,
              CldField *fields, int count, int flags)
 {
-    HINSTANCE hi = (HINSTANCE)GetWindowLongPtr(parent, GWLP_HINSTANCE);
     cld__register(hi);
 
     /* Préparer l'état */
@@ -714,18 +696,13 @@ int cld_show(HWND parent, const char *title,
     int px = pr.left + (pr.right  - pr.left  - CLD_W)   / 2;
     int py = pr.top  + (pr.bottom - pr.top   - dlg_h) / 2;
 
-    HWND hwnd = CreateWindowEx(
-        WS_EX_DLGMODALFRAME | WS_EX_TOPMOST,
-        "CLD_Dialog", title,
-        WS_POPUP | WS_VISIBLE,
+    HWND hwnd = ui_popup_create("CLD_Dialog", parent,
         px, py, CLD_W, dlg_h,
-        parent, NULL, hi, NULL);
-
-    SetWindowLongPtr(hwnd, GWLP_USERDATA, (LONG_PTR)&st);
+        WS_EX_DLGMODALFRAME | WS_EX_TOPMOST, &st);
+    ShowWindow(hwnd, SW_SHOW);
 
     /* DWM dark mode */
-    BOOL dark = TRUE;
-    DwmSetWindowAttribute(hwnd, 20, &dark, sizeof dark);
+    ui_set_dark_mode(hwnd);
 
     /* Créer les contrôles */
     RECT rc; GetClientRect(hwnd, &rc);
@@ -756,7 +733,6 @@ int cld_show(HWND parent, const char *title,
 int cld_msgbox(HWND parent, const char *title,
                const char *message, int flags)
 {
-    HINSTANCE hi = (HINSTANCE)GetWindowLongPtr(parent, GWLP_HINSTANCE);
     cld__register(hi);
 
     CldState st = {0};
@@ -772,17 +748,12 @@ int cld_msgbox(HWND parent, const char *title,
     int px = pr.left + (pr.right  - pr.left  - CLD_W)   / 2;
     int py = pr.top  + (pr.bottom - pr.top   - dlg_h) / 2;
 
-    HWND hwnd = CreateWindowEx(
-        WS_EX_DLGMODALFRAME | WS_EX_TOPMOST,
-        "CLD_Dialog", title,
-        WS_POPUP | WS_VISIBLE,
+    HWND hwnd = ui_popup_create("CLD_Dialog", parent,
         px, py, CLD_W, dlg_h,
-        parent, NULL, hi, NULL);
+        WS_EX_DLGMODALFRAME | WS_EX_TOPMOST, &st);
+    ShowWindow(hwnd, SW_SHOW);
 
-    SetWindowLongPtr(hwnd, GWLP_USERDATA, (LONG_PTR)&st);
-
-    BOOL dark = TRUE;
-    DwmSetWindowAttribute(hwnd, 20, &dark, sizeof dark);
+    ui_set_dark_mode(hwnd);
 
     MSG msg;
     while (IsWindow(hwnd) && GetMessage(&msg, NULL, 0, 0)) {

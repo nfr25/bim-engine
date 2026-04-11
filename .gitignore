@@ -5,6 +5,7 @@
 bin/
 obj/
 
+
 # --- Fichiers Objets et Compilateur ---
 *.o
 *.obj

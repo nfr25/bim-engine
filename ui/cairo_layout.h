@@ -88,6 +88,8 @@
 #ifndef CAIRO_LAYOUT_H
 #define CAIRO_LAYOUT_H
 
+#include "ui_backend.h"   /* Win32/Cairo abstraction — ui_register_class,
+                             ui_subwnd_create, UI_PAINT_BEGIN/END, UiDrawCtx */
 #include <windows.h>
 #include <windowsx.h>
 #include <cairo/cairo.h>
@@ -521,10 +523,8 @@ static void cl__draw_combo_field(cairo_t *cr, ClCombo *c, int h)
    DESSIN MENUBAR
    ══════════════════════════════════════════════════════════════════ */
 
-static void cl__draw_menubar(CairoLayout *l, HDC hdc, int w, int h)
+static void cl__draw_menubar(CairoLayout *l, cairo_t *cr, int w, int h)
 {
-    cairo_surface_t *surf = cairo_win32_surface_create(hdc);
-    cairo_t         *cr   = cairo_create(surf);
 
     /* Fond légèrement plus sombre que la toolbar */
     cairo_pattern_t *p = cairo_pattern_create_linear(0, 0, 0, h);
@@ -580,32 +580,20 @@ static void cl__draw_menubar(CairoLayout *l, HDC hdc, int w, int h)
         cairo_move_to(cr, tx, cy - te.height/2.0 - te.y_bearing);
         cairo_show_text(cr, mi->label);
     }
-
-    cairo_destroy(cr);
-    cairo_surface_destroy(surf);
 }
 
 /* ── WndProc menubar ─────────────────────────────────────────────── */
 static LRESULT CALLBACK cl__menubar_proc(HWND hwnd, UINT msg,
                                           WPARAM wp, LPARAM lp)
 {
-    CairoLayout *l = (CairoLayout*)GetWindowLongPtr(hwnd, GWLP_USERDATA);
+    CairoLayout *l = ui_get_data(CairoLayout, hwnd);
     if (!l) return DefWindowProc(hwnd, msg, wp, lp);
 
     switch (msg) {
     case WM_PAINT: {
-        PAINTSTRUCT ps;
-        HDC hdc = BeginPaint(hwnd, &ps);
-        RECT rc; GetClientRect(hwnd, &rc);
-        int w = rc.right, h = rc.bottom;
-        HDC mem = CreateCompatibleDC(hdc);
-        HBITMAP bmp = CreateCompatibleBitmap(hdc, w, h);
-        HBITMAP old = (HBITMAP)SelectObject(mem, bmp);
-        cl__draw_menubar(l, mem, w, h);
-        BitBlt(hdc, 0, 0, w, h, mem, 0, 0, SRCCOPY);
-        SelectObject(mem, old);
-        DeleteObject(bmp); DeleteDC(mem);
-        EndPaint(hwnd, &ps);
+        UI_PAINT_BEGIN(hwnd, ctx);
+            cl__draw_menubar(l, ctx.cr, ctx.w, ctx.h);
+        UI_PAINT_END(hwnd, ctx);
         return 0;
     }
 
@@ -624,7 +612,7 @@ static LRESULT CALLBACK cl__menubar_proc(HWND hwnd, UINT msg,
                 changed = 1;
             }
         }
-        if (changed) InvalidateRect(hwnd, NULL, FALSE);
+        if (changed) ui_redraw(hwnd);
         TRACKMOUSEEVENT tme = {sizeof tme, TME_LEAVE, hwnd, 0};
         TrackMouseEvent(&tme);
         return 0;
@@ -633,7 +621,7 @@ static LRESULT CALLBACK cl__menubar_proc(HWND hwnd, UINT msg,
     case WM_MOUSELEAVE:
         for (int i = 0; i < l->menu_count; i++)
             l->menu_items[i].hovered = 0;
-        InvalidateRect(hwnd, NULL, FALSE);
+        ui_redraw(hwnd);
         return 0;
 
     case WM_LBUTTONDOWN: {
@@ -648,7 +636,7 @@ static LRESULT CALLBACK cl__menubar_proc(HWND hwnd, UINT msg,
                     l->menu_open = i;
                     if (l->menu_cb) l->menu_cb(mi->id, l->menu_ud);
                 }
-                InvalidateRect(hwnd, NULL, FALSE);
+                ui_redraw(hwnd);
                 return 0;
             }
         }
@@ -658,10 +646,8 @@ static LRESULT CALLBACK cl__menubar_proc(HWND hwnd, UINT msg,
     return DefWindowProc(hwnd, msg, wp, lp);
 }
 
-static void cl__draw_toolbar(CairoLayout *l, HDC hdc, int w, int h)
+static void cl__draw_toolbar(CairoLayout *l, cairo_t *cr, int w, int h)
 {
-    cairo_surface_t *surf = cairo_win32_surface_create(hdc);
-    cairo_t         *cr   = cairo_create(surf);
 
     cl__fill_bg(cr, w, h);
 
@@ -818,18 +804,14 @@ static void cl__draw_toolbar(CairoLayout *l, HDC hdc, int w, int h)
         }
     }
 
-    cairo_destroy(cr);
-    cairo_surface_destroy(surf);
 }
 
 /* ══════════════════════════════════════════════════════════════════
    DESSIN DROPDOWN
    ══════════════════════════════════════════════════════════════════ */
 
-static void cl__draw_dropdown(ClCombo *c, HDC hdc, int w, int h)
+static void cl__draw_dropdown(ClCombo *c, cairo_t *cr, int w, int h)
 {
-    cairo_surface_t *surf = cairo_win32_surface_create(hdc);
-    cairo_t         *cr   = cairo_create(surf);
 
     /* Fond + bordure */
     cl__rounded_rect(cr, 0, 0, w, h, 5);
@@ -888,18 +870,14 @@ static void cl__draw_dropdown(ClCombo *c, HDC hdc, int w, int h)
         cairo_restore(cr);
     }
 
-    cairo_destroy(cr);
-    cairo_surface_destroy(surf);
 }
 
 /* ══════════════════════════════════════════════════════════════════
    DESSIN STATUSBAR
    ══════════════════════════════════════════════════════════════════ */
 
-static void cl__draw_status(CairoLayout *l, HDC hdc, int w, int h)
+static void cl__draw_status(CairoLayout *l, cairo_t *cr, int w, int h)
 {
-    cairo_surface_t *surf = cairo_win32_surface_create(hdc);
-    cairo_t         *cr   = cairo_create(surf);
 
     cairo_pattern_t *p = cairo_pattern_create_linear(0, 0, 0, h);
     cairo_pattern_add_color_stop_rgb(p, 0.0, 0.10, 0.11, 0.15);
@@ -979,18 +957,14 @@ static void cl__draw_status(CairoLayout *l, HDC hdc, int w, int h)
         cairo_restore(cr);
     }
 
-    cairo_destroy(cr);
-    cairo_surface_destroy(surf);
 }
 
 /* ══════════════════════════════════════════════════════════════════
    TOOLTIP POPUP
    ══════════════════════════════════════════════════════════════════ */
 
-static void cl__tip_draw(const char *text, HDC hdc, int w, int h)
+static void cl__tip_draw(const char *text, cairo_t *cr, int w, int h)
 {
-    cairo_surface_t *surf = cairo_win32_surface_create(hdc);
-    cairo_t         *cr   = cairo_create(surf);
 
     /* Fond + bordure */
     cl__rounded_rect(cr, 0.5, 0.5, w-1, h-1, 4);
@@ -1008,8 +982,6 @@ static void cl__tip_draw(const char *text, HDC hdc, int w, int h)
     cairo_move_to(cr, 8, h * 0.72);
     cairo_show_text(cr, text);
 
-    cairo_destroy(cr);
-    cairo_surface_destroy(surf);
 }
 
 static LRESULT CALLBACK cl__tip_proc(HWND hwnd, UINT msg,
@@ -1018,18 +990,10 @@ static LRESULT CALLBACK cl__tip_proc(HWND hwnd, UINT msg,
     (void)wp; (void)lp;
     switch (msg) {
     case WM_PAINT: {
-        const char *text = (const char*)GetWindowLongPtr(hwnd, GWLP_USERDATA);
-        PAINTSTRUCT ps;
-        HDC hdc = BeginPaint(hwnd, &ps);
-        RECT rc; GetClientRect(hwnd, &rc);
-        HDC mem = CreateCompatibleDC(hdc);
-        HBITMAP bmp = CreateCompatibleBitmap(hdc, rc.right, rc.bottom);
-        HBITMAP old = (HBITMAP)SelectObject(mem, bmp);
-        cl__tip_draw(text ? text : "", mem, rc.right, rc.bottom);
-        BitBlt(hdc, 0, 0, rc.right, rc.bottom, mem, 0, 0, SRCCOPY);
-        SelectObject(mem, old);
-        DeleteObject(bmp); DeleteDC(mem);
-        EndPaint(hwnd, &ps);
+        const char *text = ui_get_data(const char, hwnd);
+        UI_PAINT_BEGIN(hwnd, ctx);
+            cl__tip_draw(text ? text : "", ctx.cr, ctx.w, ctx.h);
+        UI_PAINT_END(hwnd, ctx);
         return 0;
     }
     }
@@ -1046,16 +1010,15 @@ static void cl__tip_show(CairoLayout *l, int elem_idx)
     cl__tip_hide(l);
 
     /* Mesurer le texte */
+    /* Mesure du texte via UiDrawCtx (GetDC temporaire) */
     HDC hdc = GetDC(l->hwnd_toolbar);
-    cairo_surface_t *surf = cairo_win32_surface_create(hdc);
-    cairo_t *cr = cairo_create(surf);
-    cairo_select_font_face(cr, "Segoe UI",
+    UiDrawCtx mctx; ui_draw_begin(&mctx, hdc, 0, 0);
+    cairo_select_font_face(mctx.cr, "Segoe UI",
         CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL);
-    cairo_set_font_size(cr, 11.0);
+    cairo_set_font_size(mctx.cr, 11.0);
     cairo_text_extents_t te;
-    cairo_text_extents(cr, e->tooltip, &te);
-    cairo_destroy(cr);
-    cairo_surface_destroy(surf);
+    cairo_text_extents(mctx.cr, e->tooltip, &te);
+    ui_draw_end(&mctx);
     ReleaseDC(l->hwnd_toolbar, hdc);
 
     int tw = (int)te.width  + 18;
@@ -1067,30 +1030,19 @@ static void cl__tip_show(CairoLayout *l, int elem_idx)
     int tx = pt.x - tw/2;
     int ty = pt.y + 4;
 
-    HINSTANCE hi = (HINSTANCE)GetWindowLongPtr(l->parent, GWLP_HINSTANCE);
 
     static int reg = 0;
     if (!reg) {
         reg = 1;
-        WNDCLASSEX wc = {0};
-        wc.cbSize        = sizeof wc;
-        wc.style         = CS_HREDRAW | CS_VREDRAW;
-        wc.lpfnWndProc   = cl__tip_proc;
-        wc.hInstance     = hi;
-        wc.hbrBackground = (HBRUSH)GetStockObject(BLACK_BRUSH);
-        wc.lpszClassName = "CL_Tooltip";
-        RegisterClassEx(&wc);
+        ui_register_class("CL_Tooltip", cl__tip_proc, 0, NULL);
     }
 
-    l->hwnd_tip = CreateWindowEx(
-        WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
-        "CL_Tooltip", NULL,
-        WS_POPUP | WS_VISIBLE,
-        tx, ty, tw, th,
-        l->parent, NULL, hi, NULL);
-
     /* Stocker le pointeur texte — valide tant que ClElem existe */
-    SetWindowLongPtr(l->hwnd_tip, GWLP_USERDATA, (LONG_PTR)e->tooltip);
+    l->hwnd_tip = ui_popup_create("CL_Tooltip", l->parent,
+        tx, ty, tw, th,
+        WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+        (void*)e->tooltip);
+    ShowWindow(l->hwnd_tip, SW_SHOWNOACTIVATE);
     l->tip_elem = elem_idx;
 }
 
@@ -1120,18 +1072,9 @@ static LRESULT CALLBACK cl__drop_proc(HWND hwnd, UINT msg,
 
     switch (msg) {
     case WM_PAINT: {
-        PAINTSTRUCT ps;
-        HDC hdc = BeginPaint(hwnd, &ps);
-        RECT rc; GetClientRect(hwnd, &rc);
-        int w = rc.right, h = rc.bottom;
-        HDC mem = CreateCompatibleDC(hdc);
-        HBITMAP bmp = CreateCompatibleBitmap(hdc, w, h);
-        HBITMAP old = (HBITMAP)SelectObject(mem, bmp);
-        cl__draw_dropdown(c, mem, w, h);
-        BitBlt(hdc, 0, 0, w, h, mem, 0, 0, SRCCOPY);
-        SelectObject(mem, old);
-        DeleteObject(bmp); DeleteDC(mem);
-        EndPaint(hwnd, &ps);
+        UI_PAINT_BEGIN(hwnd, ctx);
+            cl__draw_dropdown(c, ctx.cr, ctx.w, ctx.h);
+        UI_PAINT_END(hwnd, ctx);
         return 0;
     }
     case WM_MOUSEMOVE: {
@@ -1143,7 +1086,7 @@ static LRESULT CALLBACK cl__drop_proc(HWND hwnd, UINT msg,
             if (my >= iy && my < iy + CL_DROP_ITEM_H - 2)
                 c->hovered = i;
         }
-        if (c->hovered != prev) InvalidateRect(hwnd, NULL, FALSE);
+        if (c->hovered != prev) ui_redraw(hwnd);
         return 0;
     }
     case WM_MOUSEACTIVATE:
@@ -1162,7 +1105,7 @@ static LRESULT CALLBACK cl__drop_proc(HWND hwnd, UINT msg,
                     if (l && l->tb_cb)
                         l->tb_cb(CL_ID_EYE_BASE + i, l->tb_ud);
                     /* Ne pas fermer : on reste ouvert pour multi-toggle */
-                    InvalidateRect(hwnd, NULL, FALSE);
+                    ui_redraw(hwnd);
                     if (l) InvalidateRect(l->hwnd_toolbar, NULL, FALSE);
                 } else {
                     /* Sélection layer → ferme le dropdown */
@@ -1207,7 +1150,6 @@ static void cl__open_dropdown(CairoLayout *l, ClCombo *c)
     ClientToScreen(l->hwnd_toolbar, &pt);
     RECT trc; GetWindowRect(l->hwnd_toolbar, &trc);
 
-    HINSTANCE hi = (HINSTANCE)GetWindowLongPtr(l->parent, GWLP_HINSTANCE);
 
     static int reg = 0;
     if (!reg) {
@@ -1215,12 +1157,7 @@ static void cl__open_dropdown(CairoLayout *l, ClCombo *c)
         WNDCLASSEX wc = {0};
         wc.cbSize        = sizeof wc;
         wc.style         = CS_HREDRAW | CS_VREDRAW;
-        wc.lpfnWndProc   = cl__drop_proc;
-        wc.hInstance     = hi;
-        wc.hCursor       = LoadCursor(NULL, IDC_ARROW);
-        wc.hbrBackground = (HBRUSH)GetStockObject(BLACK_BRUSH);
-        wc.lpszClassName = "CL_Dropdown";
-        RegisterClassEx(&wc);
+        ui_register_class("CL_Dropdown", cl__drop_proc, 0, NULL);
     }
 
     c->hwnd_drop = CreateWindowEx(
@@ -1228,11 +1165,9 @@ static void cl__open_dropdown(CairoLayout *l, ClCombo *c)
         "CL_Dropdown", NULL,
         WS_POPUP | WS_VISIBLE,
         pt.x, trc.bottom, drop_w, drop_h,
-        l->parent, NULL, hi, NULL);
-
+        l->parent, NULL, GetModuleHandle(NULL), NULL);
     SetWindowLongPtr(c->hwnd_drop, GWLP_USERDATA, (LONG_PTR)c);
     SetProp(c->hwnd_drop, "cl_layout", (HANDLE)l);
-
     c->hovered = -1;
     c->open    = 1;
     SetFocus(c->hwnd_drop);
@@ -1245,24 +1180,15 @@ static void cl__open_dropdown(CairoLayout *l, ClCombo *c)
 static LRESULT CALLBACK cl__toolbar_proc(HWND hwnd, UINT msg,
                                           WPARAM wp, LPARAM lp)
 {
-    CairoLayout *l = (CairoLayout*)GetWindowLongPtr(hwnd, GWLP_USERDATA);
+    CairoLayout *l = ui_get_data(CairoLayout, hwnd);
     if (!l) return DefWindowProc(hwnd, msg, wp, lp);
     (void)wp;
 
     switch (msg) {
     case WM_PAINT: {
-        PAINTSTRUCT ps;
-        HDC hdc = BeginPaint(hwnd, &ps);
-        RECT rc; GetClientRect(hwnd, &rc);
-        int w = rc.right, h = rc.bottom;
-        HDC mem = CreateCompatibleDC(hdc);
-        HBITMAP bmp = CreateCompatibleBitmap(hdc, w, h);
-        HBITMAP old = (HBITMAP)SelectObject(mem, bmp);
-        cl__draw_toolbar(l, mem, w, h);
-        BitBlt(hdc, 0, 0, w, h, mem, 0, 0, SRCCOPY);
-        SelectObject(mem, old);
-        DeleteObject(bmp); DeleteDC(mem);
-        EndPaint(hwnd, &ps);
+        UI_PAINT_BEGIN(hwnd, ctx);
+            cl__draw_toolbar(l, ctx.cr, ctx.w, ctx.h);
+        UI_PAINT_END(hwnd, ctx);
         return 0;
     }
     case WM_MOUSEMOVE: {
@@ -1280,7 +1206,7 @@ static LRESULT CALLBACK cl__toolbar_proc(HWND hwnd, UINT msg,
                 else
                     e->arrow_hovered = 0;
                 if (e->hovered != was || e->arrow_hovered != was_arrow)
-                    InvalidateRect(hwnd, NULL, FALSE);
+                    ui_redraw(hwnd);
                 if (e->hovered) hovered_elem = i;
             }
         }
@@ -1299,7 +1225,7 @@ static LRESULT CALLBACK cl__toolbar_proc(HWND hwnd, UINT msg,
     case WM_MOUSELEAVE:
         for (int i = 0; i < l->elem_count; i++) l->elems[i].hovered = 0;
         cl__tip_hide(l);
-        InvalidateRect(hwnd, NULL, FALSE);
+        ui_redraw(hwnd);
         return 0;
     case WM_TIMER:
         if (wp == 1) {
@@ -1324,7 +1250,7 @@ static LRESULT CALLBACK cl__toolbar_proc(HWND hwnd, UINT msg,
                 } else {
                     cl__open_dropdown(l, c);
                 }
-                InvalidateRect(hwnd, NULL, FALSE);
+                ui_redraw(hwnd);
                 return 0;
             }
 
@@ -1337,7 +1263,7 @@ static LRESULT CALLBACK cl__toolbar_proc(HWND hwnd, UINT msg,
                     if (e->mode_count > 0) {
                         /* Multimode — cycling du mode */
                         e->mode = (e->mode + 1) % e->mode_count;
-                        InvalidateRect(hwnd, NULL, FALSE);
+                        ui_redraw(hwnd);
                         //if (l->tb_cb) l->tb_cb(e->id, l->tb_ud);
                     } else {
                         /* Split normal → CL_ID_SPLIT_BASE + id */
@@ -1347,7 +1273,7 @@ static LRESULT CALLBACK cl__toolbar_proc(HWND hwnd, UINT msg,
                     /* Clic bouton principal → id normal */
                     if (e->flags & CL_BTN_TOGGLE) e->pressed = !e->pressed;
                     else e->pressed = 1;
-                    InvalidateRect(hwnd, NULL, FALSE);
+                    ui_redraw(hwnd);
                     if (l->tb_cb) l->tb_cb(e->id, l->tb_ud);
                 }
                 return 0;
@@ -1355,7 +1281,7 @@ static LRESULT CALLBACK cl__toolbar_proc(HWND hwnd, UINT msg,
 
             if (e->flags & CL_BTN_TOGGLE) e->pressed = !e->pressed;
             else e->pressed = 1;
-            InvalidateRect(hwnd, NULL, FALSE);
+            ui_redraw(hwnd);
             if (l->tb_cb) l->tb_cb(e->id, l->tb_ud);
         }
         return 0;
@@ -1366,7 +1292,7 @@ static LRESULT CALLBACK cl__toolbar_proc(HWND hwnd, UINT msg,
             if (e->type == CL_ELEM_BTN && !(e->flags & CL_BTN_TOGGLE))
                 e->pressed = 0;
         }
-        InvalidateRect(hwnd, NULL, FALSE);
+        ui_redraw(hwnd);
         return 0;
     }
     return DefWindowProc(hwnd, msg, wp, lp);
@@ -1379,23 +1305,14 @@ static LRESULT CALLBACK cl__toolbar_proc(HWND hwnd, UINT msg,
 static LRESULT CALLBACK cl__status_proc(HWND hwnd, UINT msg,
                                          WPARAM wp, LPARAM lp)
 {
-    CairoLayout *l = (CairoLayout*)GetWindowLongPtr(hwnd, GWLP_USERDATA);
+    CairoLayout *l = ui_get_data(CairoLayout, hwnd);
     if (!l) return DefWindowProc(hwnd, msg, wp, lp);
     (void)wp; (void)lp;
     switch (msg) {
     case WM_PAINT: {
-        PAINTSTRUCT ps;
-        HDC hdc = BeginPaint(hwnd, &ps);
-        RECT rc; GetClientRect(hwnd, &rc);
-        int w = rc.right, h = rc.bottom;
-        HDC mem = CreateCompatibleDC(hdc);
-        HBITMAP bmp = CreateCompatibleBitmap(hdc, w, h);
-        HBITMAP old = (HBITMAP)SelectObject(mem, bmp);
-        cl__draw_status(l, mem, w, h);
-        BitBlt(hdc, 0, 0, w, h, mem, 0, 0, SRCCOPY);
-        SelectObject(mem, old);
-        DeleteObject(bmp); DeleteDC(mem);
-        EndPaint(hwnd, &ps);
+        UI_PAINT_BEGIN(hwnd, ctx);
+            cl__draw_status(l, ctx.cr, ctx.w, ctx.h);
+        UI_PAINT_END(hwnd, ctx);
         return 0;
     }
     }
@@ -1406,10 +1323,8 @@ static LRESULT CALLBACK cl__status_proc(HWND hwnd, UINT msg,
    WNDPROC SPLITTER
    ══════════════════════════════════════════════════════════════════ */
 
-static void cl__draw_splitter(HDC hdc, int w, int h)
+static void cl__draw_splitter(cairo_t *cr, int w, int h)
 {
-    cairo_surface_t *surf = cairo_win32_surface_create(hdc);
-    cairo_t         *cr   = cairo_create(surf);
 
     /* Fond */
     cairo_set_source_rgb(cr, 0.08, 0.09, 0.12);
@@ -1431,29 +1346,19 @@ static void cl__draw_splitter(HDC hdc, int w, int h)
         cairo_fill(cr);
     }
 
-    cairo_destroy(cr);
-    cairo_surface_destroy(surf);
 }
 
 static LRESULT CALLBACK cl__splitter_proc(HWND hwnd, UINT msg,
                                            WPARAM wp, LPARAM lp)
 {
-    CairoLayout *l = (CairoLayout*)GetWindowLongPtr(hwnd, GWLP_USERDATA);
+    CairoLayout *l = ui_get_data(CairoLayout, hwnd);
     if (!l) return DefWindowProc(hwnd, msg, wp, lp);
 
     switch (msg) {
     case WM_PAINT: {
-        PAINTSTRUCT ps;
-        HDC hdc = BeginPaint(hwnd, &ps);
-        RECT rc; GetClientRect(hwnd, &rc);
-        HDC mem = CreateCompatibleDC(hdc);
-        HBITMAP bmp = CreateCompatibleBitmap(hdc, rc.right, rc.bottom);
-        HBITMAP old = (HBITMAP)SelectObject(mem, bmp);
-        cl__draw_splitter(mem, rc.right, rc.bottom);
-        BitBlt(hdc, 0, 0, rc.right, rc.bottom, mem, 0, 0, SRCCOPY);
-        SelectObject(mem, old);
-        DeleteObject(bmp); DeleteDC(mem);
-        EndPaint(hwnd, &ps);
+        UI_PAINT_BEGIN(hwnd, ctx);
+            cl__draw_splitter(ctx.cr, ctx.w, ctx.h);
+        UI_PAINT_END(hwnd, ctx);
         return 0;
     }
     case WM_SETCURSOR:
@@ -1497,35 +1402,16 @@ static LRESULT CALLBACK cl__splitter_proc(HWND hwnd, UINT msg,
    ENREGISTREMENT CLASSES
    ══════════════════════════════════════════════════════════════════ */
 
-static void cl__register_classes(HINSTANCE hi)
+static void cl__register_classes(void)
 {
     static int done = 0;
     if (done) return; done = 1;
 
-    WNDCLASSEX wc = {0};
-    wc.cbSize        = sizeof wc;
-    wc.style         = CS_HREDRAW | CS_VREDRAW;
-    wc.hInstance     = hi;
-    wc.hCursor       = LoadCursor(NULL, IDC_ARROW);
-    wc.hbrBackground = (HBRUSH)GetStockObject(BLACK_BRUSH);
-
-    wc.lpfnWndProc   = cl__toolbar_proc;
-    wc.lpszClassName = "CL_Toolbar";
-    RegisterClassEx(&wc);
-
-    wc.lpfnWndProc   = cl__menubar_proc;
-    wc.lpszClassName = "CL_Menubar";
-    RegisterClassEx(&wc);
-
-    wc.lpfnWndProc   = cl__status_proc;
-    wc.lpszClassName = "CL_Status";
-    RegisterClassEx(&wc);
-
-    wc.style         = CS_HREDRAW | CS_VREDRAW;
-    wc.lpfnWndProc   = cl__splitter_proc;
-    wc.hCursor       = LoadCursor(NULL, IDC_SIZENS);
-    wc.lpszClassName = "CL_Splitter";
-    RegisterClassEx(&wc);
+    ui_register_class("CL_Toolbar",  cl__toolbar_proc,  0, NULL);
+    ui_register_class("CL_Menubar",  cl__menubar_proc,  0, NULL);
+    ui_register_class("CL_Status",   cl__status_proc,   0, NULL);
+    ui_register_class("CL_Splitter", cl__splitter_proc, 0,
+                       LoadCursor(NULL, IDC_SIZENS));
 }
 
 /* ══════════════════════════════════════════════════════════════════
@@ -1538,29 +1424,16 @@ CairoLayout *cl_create(HWND parent, HWND canvas)
     l->parent = parent;
     l->canvas = canvas;
 
-    HINSTANCE hi = (HINSTANCE)GetWindowLongPtr(parent, GWLP_HINSTANCE);
-    cl__register_classes(hi);
+    cl__register_classes();
 
     RECT rc; GetClientRect(parent, &rc);
     int w = rc.right;
 
-    l->hwnd_menubar = CreateWindowEx(0, "CL_Menubar", NULL,
-        WS_CHILD | WS_VISIBLE,
-        0, 0, w, CL_MENUBAR_H,
-        parent, NULL, hi, NULL);
-    SetWindowLongPtr(l->hwnd_menubar, GWLP_USERDATA, (LONG_PTR)l);
+    l->hwnd_menubar = ui_subwnd_create("CL_Menubar", parent, 0, 0, w, CL_MENUBAR_H, l);
 
-    l->hwnd_toolbar = CreateWindowEx(0, "CL_Toolbar", NULL,
-        WS_CHILD | WS_VISIBLE,
-        0, CL_MENUBAR_H, w, CL_TOOLBAR_H,
-        parent, NULL, hi, NULL);
-    SetWindowLongPtr(l->hwnd_toolbar, GWLP_USERDATA, (LONG_PTR)l);
+    l->hwnd_toolbar = ui_subwnd_create("CL_Toolbar", parent, 0, CL_MENUBAR_H, w, CL_TOOLBAR_H, l);
 
-    l->hwnd_status = CreateWindowEx(0, "CL_Status", NULL,
-        WS_CHILD | WS_VISIBLE,
-        0, rc.bottom - CL_STATUS_H, w, CL_STATUS_H,
-        parent, NULL, hi, NULL);
-    SetWindowLongPtr(l->hwnd_status, GWLP_USERDATA, (LONG_PTR)l);
+    l->hwnd_status = ui_subwnd_create("CL_Status", parent, 0, rc.bottom - CL_STATUS_H, w, CL_STATUS_H, l);
 
     cl_resize(l);
     l->tip_elem = -1;   /* pas de tooltip actif */
@@ -1973,14 +1846,11 @@ void cl_attach_transcript(CairoLayout *l, CairoTranscript *ct, int init_h)
     l->transcript_h   = init_h > 0 ? init_h : 200;
     l->transcript_vis = 0;   /* caché par défaut */
 
-    HINSTANCE hi = (HINSTANCE)GetWindowLongPtr(l->parent, GWLP_HINSTANCE);
 
     /* Créer la fenêtre splitter */
-    l->hwnd_splitter = CreateWindowEx(0, "CL_Splitter", NULL,
-        WS_CHILD,   /* pas WS_VISIBLE — caché par défaut */
-        0, 0, 1, CL_SPLITTER_H,
-        l->parent, NULL, hi, NULL);
-    SetWindowLongPtr(l->hwnd_splitter, GWLP_USERDATA, (LONG_PTR)l);
+    l->hwnd_splitter = ui_subwnd_create("CL_Splitter", l->parent,
+        0, 0, 1, CL_SPLITTER_H, l);
+    ShowWindow(l->hwnd_splitter, SW_HIDE);  /* caché par défaut */
 }
 
 void cl_show_transcript(CairoLayout *l)

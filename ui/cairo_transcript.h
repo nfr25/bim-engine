@@ -62,6 +62,8 @@
 #ifndef CAIRO_TRANSCRIPT_H
 #define CAIRO_TRANSCRIPT_H
 
+#include "ui_backend.h"
+
 #include <windows.h>
 #include <windowsx.h>
 #include <cairo/cairo.h>
@@ -193,10 +195,8 @@ static int ct__visible_lines(CairoTranscript *ct)
 }
 
 /* ── Dessin log ──────────────────────────────────────────────────── */
-static void ct__draw_log(CairoTranscript *ct, HDC hdc, int w, int h)
+static void ct__draw_log(CairoTranscript *ct, cairo_t *cr, int w, int h)
 {
-    cairo_surface_t *surf = cairo_win32_surface_create(hdc);
-    cairo_t         *cr   = cairo_create(surf);
 
     /* Fond */
     ct__col_bg(cr);
@@ -352,8 +352,6 @@ static void ct__draw_log(CairoTranscript *ct, HDC hdc, int w, int h)
         cairo_fill(cr);
     }
 
-    cairo_destroy(cr);
-    cairo_surface_destroy(surf);
 }
 
 /* ── Scroll helpers ──────────────────────────────────────────────── */
@@ -395,22 +393,14 @@ static int ct__is_in_scroll(CairoTranscript *ct, int mx, int log_w)
 static LRESULT CALLBACK ct__log_proc(HWND hwnd, UINT msg,
                                       WPARAM wp, LPARAM lp)
 {
-    CairoTranscript *ct = (CairoTranscript*)GetWindowLongPtr(hwnd, GWLP_USERDATA);
+    CairoTranscript *ct = ui_get_data(CairoTranscript, hwnd);
     if (!ct) return DefWindowProc(hwnd, msg, wp, lp);
 
     switch (msg) {
     case WM_PAINT: {
-        PAINTSTRUCT ps;
-        HDC hdc = BeginPaint(hwnd, &ps);
-        RECT rc; GetClientRect(hwnd, &rc);
-        HDC mem = CreateCompatibleDC(hdc);
-        HBITMAP bmp = CreateCompatibleBitmap(hdc, rc.right, rc.bottom);
-        HBITMAP old = (HBITMAP)SelectObject(mem, bmp);
-        ct__draw_log(ct, mem, rc.right, rc.bottom);
-        BitBlt(hdc, 0, 0, rc.right, rc.bottom, mem, 0, 0, SRCCOPY);
-        SelectObject(mem, old);
-        DeleteObject(bmp); DeleteDC(mem);
-        EndPaint(hwnd, &ps);
+        UI_PAINT_BEGIN(hwnd, ctx);
+            ct__draw_log(ct, ctx.cr, ctx.w, ctx.h);
+        UI_PAINT_END(hwnd, ctx);
         return 0;
     }
 
@@ -418,7 +408,7 @@ static LRESULT CALLBACK ct__log_proc(HWND hwnd, UINT msg,
         int delta = GET_WHEEL_DELTA_WPARAM(wp);
         ct->scroll_offset -= (delta / WHEEL_DELTA) * 3;
         ct__clamp_scroll(ct);
-        InvalidateRect(hwnd, NULL, FALSE);
+        ui_redraw(hwnd);
         return 0;
     }
 
@@ -440,7 +430,7 @@ static LRESULT CALLBACK ct__log_proc(HWND hwnd, UINT msg,
                 ct->scroll_offset = ct->scroll_drag_off0
                     + (int)(dy * max_off / (double)travel);
                 ct__clamp_scroll(ct);
-                InvalidateRect(hwnd, NULL, FALSE);
+                ui_redraw(hwnd);
             }
             return 0;
         }
@@ -454,7 +444,7 @@ static LRESULT CALLBACK ct__log_proc(HWND hwnd, UINT msg,
             ct->hover_line = -1;
         }
         if (ct->hover_line != prev_hover)
-            InvalidateRect(hwnd, NULL, FALSE);
+            ui_redraw(hwnd);
 
         TRACKMOUSEEVENT tme = {sizeof tme, TME_LEAVE, hwnd, 0};
         TrackMouseEvent(&tme);
@@ -463,7 +453,7 @@ static LRESULT CALLBACK ct__log_proc(HWND hwnd, UINT msg,
 
     case WM_MOUSELEAVE:
         ct->hover_line = -1;
-        InvalidateRect(hwnd, NULL, FALSE);
+        ui_redraw(hwnd);
         return 0;
 
     case WM_LBUTTONDOWN: {
@@ -490,7 +480,7 @@ static LRESULT CALLBACK ct__log_proc(HWND hwnd, UINT msg,
                 else
                     ct->scroll_offset += visible;
                 ct__clamp_scroll(ct);
-                InvalidateRect(hwnd, NULL, FALSE);
+                ui_redraw(hwnd);
             }
         }
         return 0;
@@ -519,7 +509,7 @@ static LRESULT CALLBACK ct__log_proc(HWND hwnd, UINT msg,
         if (ct->scroll_dragging) {
             ct->scroll_dragging = 0;
             ReleaseCapture();
-            InvalidateRect(hwnd, NULL, FALSE);
+            ui_redraw(hwnd);
         }
         return 0;
     }
@@ -571,20 +561,12 @@ static LRESULT CALLBACK ct__edit_sub(HWND hwnd, UINT msg,
 }
 
 /* ── Enregistrement classe ───────────────────────────────────────── */
-static void ct__register(HINSTANCE hi)
+static void ct__register(void)
 {
     static int done = 0;
     if (done) return; done = 1;
 
-    WNDCLASSEX wc = {0};
-    wc.cbSize        = sizeof wc;
-    wc.style         = CS_HREDRAW | CS_VREDRAW | CS_DBLCLKS;
-    wc.lpfnWndProc   = ct__log_proc;
-    wc.hInstance     = hi;
-    wc.hCursor       = LoadCursor(NULL, IDC_ARROW);
-    wc.hbrBackground = (HBRUSH)GetStockObject(BLACK_BRUSH);
-    wc.lpszClassName = "CT_Log";
-    RegisterClassEx(&wc);
+    ui_register_class("CT_Log", ct__log_proc, CS_DBLCLKS, NULL);
 }
 
 /* ── Couleur fond + texte pour l'EDIT via WM_CTLCOLOREDIT ────────── */
@@ -614,18 +596,13 @@ CairoTranscript *ct_create(HWND parent, int x, int y, int w, int h)
     ct->x = x; ct->y = y; ct->w = w; ct->h = h;
     ct->hover_line   = -1;
 
-    HINSTANCE hi = (HINSTANCE)GetWindowLongPtr(parent, GWLP_HINSTANCE);
-    ct__register(hi);
+    ct__register();
 
     int log_h   = h - CT_INPUT_H - 1;
     int input_y = y + log_h + 1;
 
     /* Fenêtre log Cairo */
-    ct->hwnd_log = CreateWindowEx(0, "CT_Log", NULL,
-        WS_CHILD | WS_VISIBLE,
-        x, y, w, log_h,
-        parent, NULL, hi, NULL);
-    SetWindowLongPtr(ct->hwnd_log, GWLP_USERDATA, (LONG_PTR)ct);
+    ct->hwnd_log = ui_subwnd_create("CT_Log", parent, x, y, w, log_h, ct);
 
     /* EDIT multi-lignes */
     ct->hwnd_input = CreateWindowEx(
@@ -633,7 +610,7 @@ CairoTranscript *ct_create(HWND parent, int x, int y, int w, int h)
         "EDIT", "",
         WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN,
         x, input_y, w, CT_INPUT_H,
-        parent, NULL, hi, NULL);
+        parent, NULL, GetModuleHandle(NULL), NULL);
 
     /* Police monospace pour l'input */
     HFONT hf = CreateFont(

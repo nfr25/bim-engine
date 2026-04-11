@@ -55,6 +55,8 @@
 #ifndef CAIRO_MENU_H
 #define CAIRO_MENU_H
 
+#include "ui_backend.h"
+
 #include <windows.h>
 #include <windowsx.h>
 #include <cairo/cairo.h>
@@ -361,20 +363,8 @@ static void cm__register(HINSTANCE hi)
     static int done = 0;
     if (done) return; done = 1;
 
-    WNDCLASSEX wc = {0};
-    wc.cbSize        = sizeof wc;
-    wc.style         = CS_HREDRAW | CS_VREDRAW | CS_DROPSHADOW;
-    wc.hInstance     = hi;
-    wc.hCursor       = LoadCursor(NULL, IDC_ARROW);
-    wc.hbrBackground = (HBRUSH)GetStockObject(BLACK_BRUSH);
-
-    wc.lpfnWndProc   = cm__wnd_proc;
-    wc.lpszClassName = "CM_Menu";
-    RegisterClassEx(&wc);
-
-    wc.lpfnWndProc   = cm__sub_proc;
-    wc.lpszClassName = "CM_Sub";
-    RegisterClassEx(&wc);
+    ui_register_class("CM_Menu", cm__wnd_proc, CS_DROPSHADOW, NULL);
+    ui_register_class("CM_Sub",  cm__sub_proc, CS_DROPSHADOW, NULL);
 }
 
 /* ── Fermeture sous-menu ────────────────────────────────────────── */
@@ -425,16 +415,11 @@ static void cm__open_sub(CairoMenu *m, int item_idx)
     if (sy + sub_h   > screen_h)  sy = screen_h - sub_h - 4;
     if (sy < 0) sy = 4;
 
-    HINSTANCE hi = (HINSTANCE)GetWindowLongPtr(m->hwnd_parent, GWLP_HINSTANCE);
 
-    sub->hwnd = CreateWindowEx(
-        WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
-        "CM_Sub", NULL,
-        WS_POPUP | WS_VISIBLE,
+    sub->hwnd = ui_popup_create("CM_Sub", m->hwnd_parent,
         sx, sy, CM_SUB_W, sub_h,
-        m->hwnd_parent, NULL, hi, NULL);
-
-    SetWindowLongPtr(sub->hwnd, GWLP_USERDATA, (LONG_PTR)m);
+        WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, m);
+    ShowWindow(sub->hwnd, SW_SHOWNOACTIVATE);
     SetProp(sub->hwnd, "cm_sub_idx", (HANDLE)(intptr_t)sh);
 }
 
@@ -444,33 +429,17 @@ static void cm__open_sub(CairoMenu *m, int item_idx)
 static LRESULT CALLBACK cm__wnd_proc(HWND hwnd, UINT msg,
                                       WPARAM wp, LPARAM lp)
 {
-    CairoMenu *m = (CairoMenu*)GetWindowLongPtr(hwnd, GWLP_USERDATA);
+    CairoMenu *m = ui_get_data(CairoMenu, hwnd);
     if (!m) return DefWindowProc(hwnd, msg, wp, lp);
 
     switch (msg) {
     case WM_PAINT: {
-        PAINTSTRUCT ps;
-        HDC hdc = BeginPaint(hwnd, &ps);
-        RECT rc; GetClientRect(hwnd, &rc);
-        int w = rc.right, h = rc.bottom;
-        HDC mem = CreateCompatibleDC(hdc);
-        HBITMAP bmp = CreateCompatibleBitmap(hdc, w, h);
-        HBITMAP old = (HBITMAP)SelectObject(mem, bmp);
-
-        cairo_surface_t *surf = cairo_win32_surface_create(mem);
-        cairo_t         *cr   = cairo_create(surf);
-        /* Fond transparent avant shadow */
-        cairo_set_source_rgba(cr, 0, 0, 0, 0);
-        cairo_paint(cr);
-        cm__draw_panel(cr, w, h, 0);
-        cm__draw_items(cr, m->items, m->count, m->hovered, CM_MENU_W);
-        cairo_destroy(cr);
-        cairo_surface_destroy(surf);
-
-        BitBlt(hdc, 0, 0, w, h, mem, 0, 0, SRCCOPY);
-        SelectObject(mem, old);
-        DeleteObject(bmp); DeleteDC(mem);
-        EndPaint(hwnd, &ps);
+        UI_PAINT_BEGIN(hwnd, ctx);
+            cairo_set_source_rgba(ctx.cr, 0, 0, 0, 0);
+            cairo_paint(ctx.cr);
+            cm__draw_panel(ctx.cr, ctx.w, ctx.h, 0);
+            cm__draw_items(ctx.cr, m->items, m->count, m->hovered, CM_MENU_W);
+        UI_PAINT_END(hwnd, ctx);
         return 0;
     }
 
@@ -486,7 +455,7 @@ static LRESULT CALLBACK cm__wnd_proc(HWND hwnd, UINT msg,
             } else {
                 cm__close_sub(m);
             }
-            InvalidateRect(hwnd, NULL, FALSE);
+            ui_redraw(hwnd);
         }
         return 0;
     }
@@ -542,27 +511,12 @@ static LRESULT CALLBACK cm__sub_proc(HWND hwnd, UINT msg,
 
     switch (msg) {
     case WM_PAINT: {
-        PAINTSTRUCT ps;
-        HDC hdc = BeginPaint(hwnd, &ps);
-        RECT rc; GetClientRect(hwnd, &rc);
-        int w = rc.right, h = rc.bottom;
-        HDC mem = CreateCompatibleDC(hdc);
-        HBITMAP bmp = CreateCompatibleBitmap(hdc, w, h);
-        HBITMAP old = (HBITMAP)SelectObject(mem, bmp);
-
-        cairo_surface_t *surf = cairo_win32_surface_create(mem);
-        cairo_t         *cr   = cairo_create(surf);
-        cairo_set_source_rgba(cr, 0, 0, 0, 0);
-        cairo_paint(cr);
-        cm__draw_panel(cr, w, h, 1);
-        cm__draw_items(cr, sub->items, sub->count, sub->hovered, CM_SUB_W);
-        cairo_destroy(cr);
-        cairo_surface_destroy(surf);
-
-        BitBlt(hdc, 0, 0, w, h, mem, 0, 0, SRCCOPY);
-        SelectObject(mem, old);
-        DeleteObject(bmp); DeleteDC(mem);
-        EndPaint(hwnd, &ps);
+        UI_PAINT_BEGIN(hwnd, ctx);
+            cairo_set_source_rgba(ctx.cr, 0, 0, 0, 0);
+            cairo_paint(ctx.cr);
+            cm__draw_panel(ctx.cr, ctx.w, ctx.h, 1);
+            cm__draw_items(ctx.cr, sub->items, sub->count, sub->hovered, CM_SUB_W);
+        UI_PAINT_END(hwnd, ctx);
         return 0;
     }
 
@@ -571,7 +525,7 @@ static LRESULT CALLBACK cm__sub_proc(HWND hwnd, UINT msg,
         int prev = sub->hovered;
         sub->hovered = cm__item_at_y(sub->items, sub->count, my);
         if (sub->hovered != prev)
-            InvalidateRect(hwnd, NULL, FALSE);
+            ui_redraw(hwnd);
         return 0;
     }
 
@@ -762,16 +716,11 @@ void cm_show(CairoMenu *m, int screen_x, int screen_y)
     if (screen_x < 0) screen_x = 4;
     if (screen_y < 0) screen_y = 4;
 
-    HINSTANCE hi = (HINSTANCE)GetWindowLongPtr(m->hwnd_parent, GWLP_HINSTANCE);
 
-    m->hwnd = CreateWindowEx(
-        WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
-        "CM_Menu", NULL,
-        WS_POPUP | WS_VISIBLE,
+    m->hwnd = ui_popup_create("CM_Menu", m->hwnd_parent,
         screen_x, screen_y, mw, mh,
-        m->hwnd_parent, NULL, hi, NULL);
-
-    SetWindowLongPtr(m->hwnd, GWLP_USERDATA, (LONG_PTR)m);
+        WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, m);
+    ShowWindow(m->hwnd, SW_SHOWNOACTIVATE);
     m->visible  = 1;
     m->hovered  = -1;
     m->open_sub = -1;
