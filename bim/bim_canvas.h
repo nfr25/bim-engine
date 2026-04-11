@@ -784,230 +784,270 @@ static void canvas_edit_mousemove(GuiCanvas *cv, double wx, double wy) {
 
 //----------------------------------------------------------------------------------------------------------
 
+
+/* ══════════════════════════════════════════════════════════════════
+   GESTIONNAIRES D'ÉVÉNEMENTS — logique métier pure
+   Appelés par CanvasWndProc après décodage des messages Win32.
+   ══════════════════════════════════════════════════════════════════ */
+
+static void canvas_on_resize(GuiCanvas *cv, int w, int h)
+{
+    cv->w = w;
+    cv->h = h;
+    canvas_cache_free(cv);
+    canvas_refresh(cv);
+}
+
+static void canvas_on_paint(GuiCanvas *cv, HWND hwnd)
+{
+    canvas_zoom_extents(cv);
+    canvas_paint(cv, hwnd);
+}
+
+static void canvas_on_wheel(GuiCanvas *cv, HWND hwnd, int x, int y, int delta)
+{
+    canvas_wheel_zoom(cv, hwnd, x, y, delta);
+    canvas_refresh(cv);
+}
+
+static void canvas_on_mbutton_down(GuiCanvas *cv, HWND hwnd, int x, int y)
+{
+    canvas_start_dragging(cv, x, y);
+    SetCapture(hwnd);
+}
+
+static void canvas_on_button_up(GuiCanvas *cv, int x, int y)
+{
+    (void)x; (void)y;
+    ReleaseCapture();
+    cv->is_dragging = FALSE;
+    if ((cv->current_tool == OBJ_POLYLINE || cv->current_tool == OBJ_POLYGON)
+        && cv->is_interacting) {
+        canvas_commit_temp_object(cv);
+        canvas_refresh(cv);
+        canvas_set_mode(cv, SELECTION_POINT, false);
+    }
+}
+
+static void canvas_on_mouse_move(GuiCanvas *cv, int x, int y)
+{
+    cv->mx = x;
+    cv->my = y;
+    stw(cv, cv->mx, cv->my, &(cv->mouseW.x), &(cv->mouseW.y));
+
+    if (cv->current_tool != SELECTION_POINT) {
+        if (!canvas_pick_vertice(cv, &cv->mouseW))
+            canvas_apply_snap(cv, &cv->mouseW);
+        else
+            canvas_refresh(cv);
+    } else {
+        canvas_apply_snap(cv, &cv->mouseW);
+    }
+    canvas_mouse_info(cv, cv->mouseW.x, cv->mouseW.y);
+
+    if (cv->is_interacting) {
+        if (cv->current_tool == OBJ_POLYGON)
+            canvas_pick_first(cv, &cv->mouseW);
+        canvas_refresh(cv);
+    }
+    if (cv->is_dragging) {
+        canvas_move(cv, cv->mx, cv->my);
+        cv->cache_valid = false;
+        canvas_refresh(cv);
+    }
+    if (cv->edit_active && cv->dragging_handle >= 0)
+        canvas_edit_mousemove(cv, cv->mouseW.x, cv->mouseW.y);
+}
+
+static void canvas_on_rbutton_down(GuiCanvas *cv, HWND hwnd, int x, int y)
+{
+    if (cm_visible(cv->cairo_menu)) cm_hide(cv->cairo_menu);
+    if (!cv->is_interacting) {
+        POINT pt = { x, y };
+        ClientToScreen(hwnd, &pt);
+        cm_show(cv->cairo_menu, pt.x, pt.y);
+    }
+    if (cv->edit_active) {
+        cv->edit_active = 0;
+        bim_db_edit_rollback(&(cv->db));
+        cv->cache_valid = false;
+        canvas_refresh(cv);
+        printf("rollback of edition\n");
+    }
+}
+
+static void canvas_on_lbutton_down(GuiCanvas *cv, HWND hwnd, int x, int y, int shift)
+{
+    SetFocus(hwnd);
+    stw(cv, x, y, &(cv->start.x), &(cv->start.y));
+    if (cm_visible(cv->cairo_menu)) cm_hide(cv->cairo_menu);
+
+    switch (cv->current_tool) {
+        case OBJ_NODE:
+            if (!canvas_pick_vertice(cv, &cv->start))
+                canvas_apply_snap(cv, &cv->start);
+            canvas_save_node(cv, cv->current_symbol, cv->start.x, cv->start.y, 0.0);
+            canvas_set_mode(cv, SELECTION_POINT, false);
+            canvas_refresh(cv);
+            break;
+        case OBJ_POLYGON:
+        case OBJ_POLYLINE: {
+            if (!canvas_pick_vertice(cv, &cv->start))
+                canvas_apply_snap(cv, &cv->start);
+            bool closed = canvas_pick_first(cv, &cv->start);
+            canvas_add_to_temp(cv, cv->start);
+            if (closed) {
+                canvas_commit_temp_object(cv);
+                canvas_set_mode(cv, SELECTION_POINT, false);
+            }
+            canvas_refresh(cv);
+            break;
+        }
+        case SELECTION_POINT: {
+            double tol = 8.0f / cv->zoom;
+            bim_db_pick(&(cv->db), cv->start.x, cv->start.y, tol, shift);
+            cv->cache_valid = false;
+            canvas_refresh(cv);
+            break;
+        }
+        case ZOOM_WINDOW:
+            cv->is_interacting = true;
+            canvas_refresh(cv);
+            break;
+    }
+    if (cv->edit_active) {
+        cv->dragging_handle = canvas_edit_lbuttondown(cv, cv->start.x, cv->start.y);
+        if (cv->dragging_handle == -1) {
+            cv->edit_active = 0;
+            bim_db_edit_commit(&(cv->db));
+            cv->cache_valid = false;
+            canvas_refresh(cv);
+            printf("end of edition\n");
+        }
+    }
+}
+
+static void canvas_on_lbutton_up(GuiCanvas *cv, int x, int y)
+{
+    if ((cv->current_tool == ZOOM_WINDOW) && cv->is_interacting) {
+        cv->mx = x;
+        cv->my = y;
+        double wx, wy;
+        stw(cv, x, y, &wx, &wy);
+        canvas_zoom_window(cv, cv->start.x, cv->start.y, wx, wy);
+        canvas_refresh(cv);
+        canvas_set_mode(cv, SELECTION_POINT, false);
+    }
+    if (cv->edit_active && cv->dragging_handle >= 0) {
+        cv->dragging_handle = -1;
+        canvas_refresh(cv);
+    }
+}
+
+static void canvas_on_lbutton_dbl(GuiCanvas *cv, int x, int y)
+{
+    stw(cv, x, y, &(cv->mouseW.x), &(cv->mouseW.y));
+    printf("in double click\n");
+    double tol = 8.0f / cv->zoom;
+    if (bim_db_pick(&(cv->db), cv->mouseW.x, cv->mouseW.y, tol, 0) > 0) {
+        printf("in edit\n");
+        bim_db_edit_begin(&(cv->db));
+        cv->edit_active = 1;
+        bim_db_edit_load_handles(&cv->db,
+                                 cv->edit_handles,
+                                 MAX_POLY_PTS,
+                                 &cv->edit_handle_count);
+        printf("handles loaded: %d\n", cv->edit_handle_count);
+        canvas_refresh(cv);
+    }
+}
+
+static void canvas_on_drop_files(GuiCanvas *cv, HDROP hDrop)
+{
+    char filePath[MAX_PATH];
+    UINT fileCount = DragQueryFileA(hDrop, 0xFFFFFFFF, NULL, 0);
+    for (UINT i = 0; i < fileCount; i++) {
+        DragQueryFileA(hDrop, i, filePath, MAX_PATH);
+        char *ext = strrchr(filePath, '.');
+        if (ext && _stricmp(ext, ".shp") == 0) {
+            bim_db_import_blob_layer(&(cv->db), filePath, 0);
+            cv->call_back(EV_LAYERS, NULL, cv);
+            cv->refit = true;
+            cv->cache_valid = false;
+            canvas_refresh(cv);
+        }
+    }
+    DragFinish(hDrop);
+}
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
 LRESULT CALLBACK CanvasWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     GuiCanvas* cv = (GuiCanvas*)GetWindowLongPtr(hwnd, GWLP_USERDATA);
     if (!cv && msg != WM_NCCREATE) return DefWindowProc(hwnd, msg, wParam, lParam);
 
     switch (msg) {
-    case WM_CREATE :
+    case WM_CREATE:
         SetFocus(hwnd);
-        return 0;    
-    case WM_MOUSEWHEEL: {
-        canvas_wheel_zoom(cv, hwnd, GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam), 
-                                    GET_WHEEL_DELTA_WPARAM(wParam));
-        canvas_refresh(cv);
         return 0;
-        }
-    case WM_KEYDOWN:
-        canvas_handle_keyboard(cv, wParam);
-        break;    
-    case WM_SIZE: {
-            cv->w = LOWORD(lParam);
-            cv->h = HIWORD(lParam);
-            canvas_cache_free(cv); 
-            canvas_refresh(cv);
-            return 0;
-        }
-    case WM_KILLFOCUS:
+    case WM_SIZE:
+        canvas_on_resize(cv, LOWORD(lParam), HIWORD(lParam));
         return 0;
-    case WM_PAINT: 
-        canvas_zoom_extents(cv);
-        canvas_paint(cv, hwnd);
+    case WM_PAINT:
+        canvas_on_paint(cv, hwnd);
         return 0;
     case WM_ERASEBKGND:
-        return 1;  
-    case WM_DESTROY :
-        canvas_cache_free(cv); 
-        break;          
+        return 1;
+    case WM_KILLFOCUS:
+        return 0;
+    case WM_DESTROY:
+        canvas_cache_free(cv);
+        break;
     case WM_NCDESTROY:
         bim_close(cv);
         SetWindowLongPtr(hwnd, GWLP_USERDATA, 0);
         return 0;
-    case WM_MBUTTONDOWN: // Clic Molette pour le Pan
-        canvas_start_dragging(cv,GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
-        SetCapture(hwnd); 
+    case WM_MOUSEWHEEL:
+        canvas_on_wheel(cv, hwnd,
+                        GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam),
+                        GET_WHEEL_DELTA_WPARAM(wParam));
         return 0;
-    case WM_MOUSEMOVE: {
-        cv->mx = GET_X_LPARAM(lParam);
-        cv->my = GET_Y_LPARAM(lParam);
-        stw(cv, cv->mx, cv->my, &(cv->mouseW.x), &(cv->mouseW.y));
-        
-        if (cv->current_tool != SELECTION_POINT) 
-        {
-          if (!canvas_pick_vertice(cv, &cv->mouseW))
-            canvas_apply_snap(cv, &cv->mouseW); 
-          else
-            canvas_refresh(cv);          
-        }
-        else
-            canvas_apply_snap(cv, &cv->mouseW); 
-        canvas_mouse_info(cv, cv->mouseW.x, cv->mouseW.y);     
-        if (cv->is_interacting)
-        {   
-            if ( cv->current_tool == OBJ_POLYGON)
-                canvas_pick_first(cv, &cv->mouseW);
-            canvas_refresh(cv);
-        }
-        if (cv->is_dragging) {
-            canvas_move(cv, cv->mx, cv->my);
-            cv->cache_valid = false;
-            canvas_refresh(cv);
-        }
-        if (cv->edit_active && cv->dragging_handle >= 0)
-        {
-            canvas_edit_mousemove(cv, cv->mouseW.x, cv->mouseW.y);
-        }    
+    case WM_MBUTTONDOWN:
+        canvas_on_mbutton_down(cv, hwnd,
+                               GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
         return 0;
-    }
-   case WM_RBUTTONDOWN:
-        if (cm_visible(cv->cairo_menu)) cm_hide(cv->cairo_menu);   
-        if (!cv->is_interacting) {
-            POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
-            ClientToScreen(hwnd, &pt);
-            cm_show(cv->cairo_menu, pt.x, pt.y);
-        }
-        if (cv->edit_active)
-        {  
-            cv->edit_active = 0;
-            bim_db_edit_rollback(&(cv->db));
-            cv->cache_valid = false;
-            canvas_refresh(cv);
-            printf("rollback of edition\n");
-        }
-        return 0;    
     case WM_MBUTTONUP:
-    case WM_RBUTTONUP: {
-        ReleaseCapture();
-        cv->is_dragging = FALSE;
-        if ( (cv->current_tool == OBJ_POLYLINE ||  cv->current_tool == OBJ_POLYGON) && 
-             cv->is_interacting ) {
-            canvas_commit_temp_object(cv);
-            canvas_refresh(cv);
-            canvas_set_mode(cv, SELECTION_POINT, false);
-            }  
-
+    case WM_RBUTTONUP:
+        canvas_on_button_up(cv, GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
         return 0;
-    }  
-    case WM_LBUTTONDOWN: {
-            SetFocus(hwnd);
-            int shift_pressed = (GetAsyncKeyState(VK_SHIFT) & 0x8000) ? 1 : 0;
-            stw(cv, GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam), 
-                    &(cv->start.x), &(cv->start.y));
-            if (cm_visible(cv->cairo_menu)) cm_hide(cv->cairo_menu);   
-            switch (cv->current_tool){
-                case OBJ_NODE : 
-                    if (!canvas_pick_vertice(cv, &cv->start))  
-                        canvas_apply_snap(cv, &cv->start); 
-                                     
-                    canvas_save_node(cv, cv->current_symbol, cv->start.x, cv->start.y, 0.0);
-                    canvas_set_mode(cv, SELECTION_POINT, false);
-                    canvas_refresh(cv);
-                break; 
-                case OBJ_POLYGON  : 
-                case OBJ_POLYLINE : 
-                    if (!canvas_pick_vertice(cv, &cv->start))
-                        canvas_apply_snap(cv, &cv->start);
-                    bool closed = canvas_pick_first(cv, &cv->start);
-                    canvas_add_to_temp(cv, cv->start);
-                    if (closed)
-                    {
-                        canvas_commit_temp_object(cv);
-                        canvas_set_mode(cv, SELECTION_POINT, false);                        
-                    }
-                    canvas_refresh(cv);
-                break;
-                case SELECTION_POINT:
-                    double tol = 8.0f / cv->zoom;
-                    bim_db_pick(&(cv->db), cv->start.x, cv->start.y, tol, shift_pressed);
-                    cv->cache_valid = false;
-                    canvas_refresh(cv);
-                break; 
-                case ZOOM_WINDOW :
-                    cv->is_interacting = true;
-                    canvas_refresh(cv);
-                break;    
-            } 
-            if (cv->edit_active)
-            {  cv->dragging_handle = canvas_edit_lbuttondown(cv, cv->start.x, cv->start.y);
-               if ( cv->dragging_handle == -1) // click out
-               {
-                    cv->edit_active = 0;
-                    bim_db_edit_commit(&(cv->db));
-                    cv->cache_valid = false;
-                    canvas_refresh(cv);
-                    printf("end of edition\n");
-               }
-            }    
+    case WM_MOUSEMOVE:
+        canvas_on_mouse_move(cv, GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
         return 0;
-        }  
-    case WM_LBUTTONUP: {
-             if ( (cv->current_tool == ZOOM_WINDOW) && 
-             cv->is_interacting ) { 
-                cv->mx = GET_X_LPARAM(lParam);
-                cv->my = GET_Y_LPARAM(lParam);
-                double x,y;
-                stw(cv, cv->mx, cv->my, &x, &y);
-                canvas_zoom_window(cv, cv->start.x, cv->start.y, x, y);
-                canvas_refresh(cv);
-                canvas_set_mode(cv, SELECTION_POINT, false);
-             }   
-             if (cv->edit_active && cv->dragging_handle >= 0) {
-                cv->dragging_handle = -1;
-                canvas_refresh(cv);
-              }        
-        return 0;   
-    }
-    case WM_LBUTTONDBLCLK: {
-        double worldX, worldY;
-        stw(cv, GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam), &(cv->mouseW.x), &(cv->mouseW.y));
-        printf("in double click\n");
-        // 2. Picking : Trouver l'entité sous la souris
-        double tol = 8.0f / cv->zoom;
-        if (bim_db_pick(&(cv->db), cv->mouseW.x, cv->mouseW.y, tol, 0) > 0)
-        {
-            printf("in edit\n");
-            bim_db_edit_begin(&(cv->db));
-            cv->edit_active = 1;
-            /* Charger les handles */
-            bim_db_edit_load_handles(&cv->db, 
-                              cv->edit_handles,
-                              MAX_POLY_PTS,
-                              &cv->edit_handle_count);
-            printf("handles loaded: %d\n", cv->edit_handle_count);
-            canvas_refresh(cv);
-        }
+    case WM_RBUTTONDOWN:
+        canvas_on_rbutton_down(cv, hwnd,
+                               GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
         return 0;
-    }  
-    case WM_DROPFILES: {
-        HDROP hDrop = (HDROP)wParam;
-        char filePath[MAX_PATH];
-
-        // Combien de fichiers ont été déposés ?
-        UINT fileCount = DragQueryFileA(hDrop, 0xFFFFFFFF, NULL, 0);
-
-        for (UINT i = 0; i < fileCount; i++) {
-            // Récupérer le chemin du fichier i
-            DragQueryFileA(hDrop, i, filePath, MAX_PATH);
-
-            // Vérifier si c'est un .shp (simple check de l'extension)
-            char *ext = strrchr(filePath, '.');
-            if (ext && _stricmp(ext, ".shp") == 0) {
-                bim_db_import_blob_layer( &(cv->db), filePath, 0);
-                cv->call_back(EV_LAYERS, NULL, cv);
-                // Forcer le rafraîchissement et le zoom extents
-                cv->refit = true;
-                cv->cache_valid = false;
-                canvas_refresh(cv);
-            }
-        }
-
-        DragFinish(hDrop); // Libère la mémoire allouée par Windows pour le drop
+    case WM_LBUTTONDOWN:
+        canvas_on_lbutton_down(cv, hwnd,
+                               GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam),
+                               (GetAsyncKeyState(VK_SHIFT) & 0x8000) ? 1 : 0);
         return 0;
-        }                            
+    case WM_LBUTTONUP:
+        canvas_on_lbutton_up(cv, GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
+        return 0;
+    case WM_LBUTTONDBLCLK:
+        canvas_on_lbutton_dbl(cv, GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
+        return 0;
+    case WM_KEYDOWN:
+        canvas_handle_keyboard(cv, (int)wParam);
+        return 0;
+    case WM_DROPFILES:
+        canvas_on_drop_files(cv, (HDROP)wParam);
+        return 0;
     }
     return DefWindowProc(hwnd, msg, wParam, lParam);
 }
-//////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
 static ATOM RegisterCanvasClass(HINSTANCE hInstance) {
     WNDCLASSEXW wcex = {0};
 
