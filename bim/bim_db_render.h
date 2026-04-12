@@ -35,7 +35,7 @@ void bim_db_render_blobs(BimDB *db, double vMinX, double vMaxX, double vMinY, do
         style.stroke_color     = sqlite3_column_int(st_meta, 2);
         style.stroke_width     = sqlite3_column_int(st_meta, 3);
         style.fill_color       = sqlite3_column_int(st_meta, 4);
-        style.line_type       = sqlite3_column_int(st_meta, 5);
+        style.line_type        = sqlite3_column_int(st_meta, 5);
         // 2. Requête dynamique pointant sur l'INDEX DÉDIÉ (idx_table_name)
         char data_sql[1024];
         snprintf(data_sql, sizeof(data_sql), 

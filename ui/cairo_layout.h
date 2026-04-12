@@ -101,13 +101,30 @@
 #include <math.h>
 
 /* cairo_transcript.h doit être inclus AVANT cairo_layout.h
- * si on veut utiliser cl_attach_transcript.
+ * si on veut utiliser cl_attach_tabpane / cl_attach_transcript.
  * Si non inclus, les fonctions transcript sont désactivées. */
 #ifdef CAIRO_TRANSCRIPT_H
 #  define CL_HAS_TRANSCRIPT 1
 #else
 #  define CL_HAS_TRANSCRIPT 0
    typedef void CairoTranscript;  /* opaque vide si pas inclus */
+#endif
+
+/* cairo_tabpane.h doit être inclus AVANT cairo_layout.h
+ * si on veut utiliser cl_attach_tabpane.
+ * Ordre recommandé dans bim.c :
+ *   #define CAIRO_TRANSCRIPT_IMPLEMENTATION
+ *   #include "ui/cairo_transcript.h"
+ *   #define CAIRO_TABPANE_IMPLEMENTATION
+ *   #include "ui/cairo_tabpane.h"
+ *   #define CAIRO_LAYOUT_IMPLEMENTATION
+ *   #include "ui/cairo_layout.h"
+ */
+#ifdef CAIRO_TABPANE_H
+#  define CL_HAS_TABPANE 1
+#else
+#  define CL_HAS_TABPANE 0
+   typedef void CairoTabPane;     /* opaque vide si pas inclus */
 #endif
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -210,15 +227,41 @@ void cl_status_set         (CairoLayout *l, int pane_idx, const char *text);
 void cl_status_set_progress(CairoLayout *l, int pane_idx, float progress);
 void cl_status_clear       (CairoLayout *l, int pane_idx);
 
-/* ─── Transcript + splitter ─────────────────────────────────────── */
-/* Attacher un CairoTranscript existant au layout.
- * init_h : hauteur initiale en pixels (ex: 200).
- * Le transcript est créé AVANT ct_attach, avec ct_create(parent,0,0,1,1)
- * — cl_attach_transcript se charge de le positionner correctement.     */
+/* ─── Transcript + splitter + tabpane ───────────────────────────── */
+/*
+ * cl_attach_tabpane — API recommandée quand cairo_tabpane.h est inclus
+ * ──────────────────────────────────────────────────────────────────────
+ * Attache un CairoTabPane au layout. Le tabpane occupe la partie basse
+ * du splitter. Le transcript est automatiquement ajouté en Tab 0
+ * (fixe, sans bouton close).
+ *
+ * init_h         : hauteur initiale de la zone basse (ex: 220)
+ * on_tab_close   : callback appelé quand un tab dynamique est fermé
+ *                  → bim.c doit y détruire le contenu (BimListView, etc.)
+ *
+ * Après cet appel, utiliser :
+ *   cl_tabpane_add(l, "label", hwnd)  — ouvrir un tab dynamique
+ *   cl_tabpane_close(l, idx)          — fermer un tab
+ *   cl_tabpane_select(l, idx)         — activer un tab
+ *   cl_tabpane_get(l)                 — accès direct si besoin
+ */
+#if CL_HAS_TABPANE && CL_HAS_TRANSCRIPT
+void cl_attach_tabpane (CairoLayout *l, CairoTranscript *ct, int init_h,
+                        void (*on_tab_close)(int idx, HWND content, void *ud),
+                        void *ud);
+#endif
+
+int           cl_tabpane_add   (CairoLayout *l, const char *label, HWND content);
+void          cl_tabpane_close (CairoLayout *l, int idx);
+void          cl_tabpane_select(CairoLayout *l, int idx);
+CairoTabPane *cl_tabpane_get   (CairoLayout *l);
+
+/* ─── API legacy transcript (sans tabpane) ──────────────────────── */
 void cl_attach_transcript  (CairoLayout *l, CairoTranscript *ct, int init_h);
 void cl_show_transcript    (CairoLayout *l);
 void cl_hide_transcript    (CairoLayout *l);
 void cl_toggle_transcript  (CairoLayout *l);
+void cl_get_transcript_rect(CairoLayout *l, int *x, int *y, int *w, int *h);
 
 /* ═══════════════════════════════════════════════════════════════════
    SECTION IMPLÉMENTATION
@@ -341,6 +384,14 @@ struct CairoLayout_ {
     int              split_dragging;
     int              split_drag_y0;
     int              split_drag_h0;
+
+    /* TabPane (partie basse du splitter — remplace le transcript direct) */
+#if CL_HAS_TABPANE
+    CairoTabPane    *tabpane;
+    HWND             hwnd_ct_wrap;   /* conteneur transparent pour transcript */
+    void           (*tabpane_close_cb)(int idx, HWND content, void *ud);
+    void            *tabpane_close_ud;
+#endif
 };
 
 /* ── Forward déclarations ────────────────────────────────────────── */
@@ -1402,6 +1453,40 @@ static LRESULT CALLBACK cl__splitter_proc(HWND hwnd, UINT msg,
    ENREGISTREMENT CLASSES
    ══════════════════════════════════════════════════════════════════ */
 
+/* ── Conteneur transparent pour le transcript sous le tabpane ──────
+ * Ce HWND regroupe hwnd_log + hwnd_input du CairoTranscript.
+ * tp_tab_set_content gère ce HWND (show/hide/MoveWindow).
+ * Quand il reçoit WM_SIZE, il relaye à ct_resize via le layout.    */
+#if CL_HAS_TABPANE && CL_HAS_TRANSCRIPT
+static LRESULT CALLBACK cl__ct_wrap_proc(HWND hwnd, UINT msg,
+                                          WPARAM wp, LPARAM lp)
+{
+    CairoLayout *l = ui_get_data(CairoLayout, hwnd);
+
+    switch (msg) {
+    case WM_SIZE: {
+        /* Relayer au transcript : repositionner ses deux HWNDs
+         * dans les nouvelles dimensions du wrap.                    */
+        if (l && l->transcript) {
+            RECT rc; GetClientRect(hwnd, &rc);
+            ct_resize(l->transcript, 0, 0, rc.right, rc.bottom);
+        }
+        return 0;
+    }
+    case WM_CTLCOLOREDIT: {
+        /* L'EDIT du transcript est enfant du wrap — il remonte
+         * WM_CTLCOLOREDIT ici. On le relaye à ct_on_ctlcolor.      */
+        if (l && l->transcript)
+            return ct_on_ctlcolor(l->transcript, (HDC)wp, (HWND)lp);
+        return (LRESULT)GetStockObject(BLACK_BRUSH);
+    }
+    case WM_ERASEBKGND:
+        return 1;
+    }
+    return DefWindowProc(hwnd, msg, wp, lp);
+}
+#endif
+
 static void cl__register_classes(void)
 {
     static int done = 0;
@@ -1412,6 +1497,9 @@ static void cl__register_classes(void)
     ui_register_class("CL_Status",   cl__status_proc,   0, NULL);
     ui_register_class("CL_Splitter", cl__splitter_proc, 0,
                        LoadCursor(NULL, IDC_SIZENS));
+#if CL_HAS_TABPANE && CL_HAS_TRANSCRIPT
+    ui_register_class("BIM_CtWrap",  cl__ct_wrap_proc,  0, NULL);
+#endif
 }
 
 /* ══════════════════════════════════════════════════════════════════
@@ -1446,6 +1534,9 @@ void cl_destroy(CairoLayout *l)
     cl__tip_hide(l);
     for (int i = 0; i < l->combo_count; i++)
         if (l->combos[i].hwnd_drop) DestroyWindow(l->combos[i].hwnd_drop);
+#if CL_HAS_TABPANE
+    if (l->tabpane) tp_destroy(l->tabpane);
+#endif
     if (l->hwnd_splitter) DestroyWindow(l->hwnd_splitter);
     if (l->hwnd_menubar)  DestroyWindow(l->hwnd_menubar);
     if (l->hwnd_toolbar)  DestroyWindow(l->hwnd_toolbar);
@@ -1485,7 +1576,22 @@ static void cl__do_resize(CairoLayout *l)
         SetWindowPos(l->canvas,        NULL, 0, top,        w, canvas_h,      SWP_NOZORDER);
         SetWindowPos(l->hwnd_splitter, NULL, 0, splitter_y, w, CL_SPLITTER_H, SWP_NOZORDER | SWP_SHOWWINDOW);
 
-#if CL_HAS_TRANSCRIPT
+#if CL_HAS_TABPANE
+        /* TabPane présent : il gère le transcript en Tab 0 */
+        if (l->tabpane) {
+            /* S'assurer que le tabpane est au-dessus du canvas */
+            SetWindowPos(l->tabpane->hwnd, HWND_TOP,
+                         0, transcript_y, w, l->transcript_h,
+                         SWP_SHOWWINDOW);
+        }
+        #if CL_HAS_TRANSCRIPT
+        else {
+            ct_resize(l->transcript, 0, transcript_y, w, l->transcript_h);
+            ShowWindow(((struct CairoTranscript_ *)l->transcript)->hwnd_log,   SW_SHOW);
+            ShowWindow(((struct CairoTranscript_ *)l->transcript)->hwnd_input, SW_SHOW);
+        }
+        #endif
+#elif CL_HAS_TRANSCRIPT
         ct_resize(l->transcript, 0, transcript_y, w, l->transcript_h);
         ShowWindow(((struct CairoTranscript_ *)l->transcript)->hwnd_log,   SW_SHOW);
         ShowWindow(((struct CairoTranscript_ *)l->transcript)->hwnd_input, SW_SHOW);
@@ -1497,7 +1603,12 @@ static void cl__do_resize(CairoLayout *l)
         if (l->hwnd_splitter)
             ShowWindow(l->hwnd_splitter, SW_HIDE);
 
-#if CL_HAS_TRANSCRIPT
+#if CL_HAS_TABPANE
+        if (l->tabpane)
+            SetWindowPos(l->tabpane->hwnd, NULL,
+                         0, 0, 0, 0,
+                         SWP_NOMOVE | SWP_NOSIZE | SWP_HIDEWINDOW);
+#elif CL_HAS_TRANSCRIPT
         if (l->transcript) {
             ShowWindow(((struct CairoTranscript_ *)l->transcript)->hwnd_log,   SW_HIDE);
             ShowWindow(((struct CairoTranscript_ *)l->transcript)->hwnd_input, SW_HIDE);
@@ -1877,6 +1988,158 @@ void cl_toggle_transcript(CairoLayout *l)
     else
         cl_show_transcript(l);
 }
+
+/* ── cl_get_transcript_rect (legacy) ────────────────────────────── */
+void cl_get_transcript_rect(CairoLayout *l, int *rx, int *ry, int *rw, int *rh)
+{
+    if (rx) *rx = 0;
+    if (ry) *ry = 0;
+    if (rw) *rw = 0;
+    if (rh) *rh = 0;
+
+    if (!l || !l->transcript || !l->transcript_vis) return;
+
+    RECT rc;
+    GetClientRect(l->parent, &rc);
+    int w      = rc.right;
+    int top    = CL_MENUBAR_H + CL_TOOLBAR_H;
+    int bottom = rc.bottom - CL_STATUS_H;
+    int avail  = bottom - top;
+
+    int min_tc = 60;
+    int max_tc = avail - 40 - CL_SPLITTER_H;
+    if (max_tc < min_tc) max_tc = min_tc;
+
+    int th = l->transcript_h;
+    if (th < min_tc) th = min_tc;
+    if (th > max_tc) th = max_tc;
+
+    int canvas_h     = avail - CL_SPLITTER_H - th;
+    int splitter_y   = top + canvas_h;
+    int transcript_y = splitter_y + CL_SPLITTER_H;
+
+    if (rx) *rx = 0;
+    if (ry) *ry = transcript_y;
+    if (rw) *rw = w;
+    if (rh) *rh = th;
+}
+
+/* ── Tabpane helpers ─────────────────────────────────────────────── */
+int cl_tabpane_add(CairoLayout *l, const char *label, HWND content)
+{
+#if CL_HAS_TABPANE
+    if (!l || !l->tabpane) return -1;
+    int idx = tp_tab_add(l->tabpane, label, 1);   /* closable */
+    if (idx >= 0 && content)
+        tp_tab_set_content(l->tabpane, idx, content);
+    return idx;
+#else
+    (void)l; (void)label; (void)content;
+    return -1;
+#endif
+}
+
+void cl_tabpane_close(CairoLayout *l, int idx)
+{
+#if CL_HAS_TABPANE
+    if (l && l->tabpane) tp_tab_close(l->tabpane, idx);
+#else
+    (void)l; (void)idx;
+#endif
+}
+
+void cl_tabpane_select(CairoLayout *l, int idx)
+{
+#if CL_HAS_TABPANE
+    if (l && l->tabpane) tp_tab_select(l->tabpane, idx);
+#else
+    (void)l; (void)idx;
+#endif
+}
+
+CairoTabPane *cl_tabpane_get(CairoLayout *l)
+{
+#if CL_HAS_TABPANE
+    return l ? l->tabpane : NULL;
+#else
+    (void)l;
+    return NULL;
+#endif
+}
+
+/* ── cl_attach_tabpane ───────────────────────────────────────────── */
+#if CL_HAS_TABPANE && CL_HAS_TRANSCRIPT
+
+/* Callback interne : relaie TP_EV_CLOSE vers bim.c */
+typedef struct { CairoLayout *l; } ClTpUd;
+
+static void cl__tp_event(int event, int tab_idx, void *ud)
+{
+    CairoLayout *l = (CairoLayout *)ud;
+    if (!l) return;
+
+    if (event == TP_EV_CLOSE) {
+        HWND content = tp_tab_get_content(l->tabpane, tab_idx);
+        if (l->tabpane_close_cb)
+            l->tabpane_close_cb(tab_idx, content, l->tabpane_close_ud);
+        /* le contenu sera détruit par bim.c dans le callback */
+    }
+}
+
+void cl_attach_tabpane(CairoLayout *l, CairoTranscript *ct, int init_h,
+                       void (*on_tab_close)(int idx, HWND content, void *ud),
+                       void *ud)
+{
+    if (!l || !ct) return;
+
+    /* stocker transcript + hauteur comme avant */
+    l->transcript   = ct;
+    l->transcript_h = init_h > 0 ? init_h : 200;
+
+    /* créer le splitter */
+    l->hwnd_splitter = ui_subwnd_create("CL_Splitter", l->parent,
+                                         0, 0, 1, 1, l);
+    ShowWindow(l->hwnd_splitter, SW_HIDE);
+
+    /* créer le tabpane — géométrie provisoire, cl_resize s'en charge */
+    l->tabpane = tp_create(l->parent, 0, 0, 1, 1);
+    l->tabpane_close_cb = on_tab_close;
+    l->tabpane_close_ud = ud;
+    tp_set_cb(l->tabpane, cl__tp_event, l);
+
+    /* Tab 0 : transcript fixe, sans close.
+     * Le transcript a deux HWNDs (hwnd_log + hwnd_input) sans conteneur
+     * commun. On crée un HWND conteneur transparent qui les englobe —
+     * c'est ce HWND que tp_tab_set_content gère (show/hide/resize).     */
+
+    /* créer le conteneur transcript — userdata = layout pour WM_SIZE */
+    RECT rc_p; GetClientRect(l->parent, &rc_p);
+    HWND hwnd_ct_wrap = ui_subwnd_create("BIM_CtWrap", l->parent,
+                                          0, 0, rc_p.right, l->transcript_h,
+                                          l);
+
+    /* re-parenter les deux HWNDs transcript sous le conteneur */
+    struct CairoTranscript_ *ct_ = (struct CairoTranscript_ *)ct;
+    SetParent(ct_->hwnd_log,   hwnd_ct_wrap);
+    SetParent(ct_->hwnd_input, hwnd_ct_wrap);
+    /* SetParent cache les fenêtres — les remettre visibles */
+    ShowWindow(ct_->hwnd_log,   SW_SHOW);
+    ShowWindow(ct_->hwnd_input, SW_SHOW);
+
+    /* mémoriser le wrap dans la struct pour ct_resize via WM_SIZE */
+    l->hwnd_ct_wrap = hwnd_ct_wrap;
+
+    int t0 = tp_tab_add(l->tabpane, "Transcript", 0);
+    tp_tab_set_content(l->tabpane, t0, hwnd_ct_wrap);
+
+    /* caché par défaut — cl_toggle_transcript() l'ouvre comme avant */
+    l->transcript_vis = 0;
+    SetWindowPos(l->tabpane->hwnd, NULL, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_HIDEWINDOW | SWP_NOZORDER);
+    cl_resize(l);
+}
+
+#endif /* CL_HAS_TABPANE && CL_HAS_TRANSCRIPT */
 
 #endif /* CAIRO_LAYOUT_IMPLEMENTATION */
 #endif /* CAIRO_LAYOUT_H */

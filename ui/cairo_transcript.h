@@ -620,6 +620,9 @@ CairoTranscript *ct_create(HWND parent, int x, int y, int w, int h)
         "Consolas");
     SendMessage(ct->hwnd_input, WM_SETFONT, (WPARAM)hf, TRUE);
 
+    /* Prompt ">" affiché quand l'input est vide */
+    SendMessage(ct->hwnd_input, EM_SETCUEBANNER, FALSE, (LPARAM)L"> ");
+
     /* Subclasser l'EDIT */
     SetWindowLongPtr(ct->hwnd_input, GWLP_USERDATA, (LONG_PTR)ct);
     ct->edit_orig_proc = (WNDPROC)SetWindowLongPtr(

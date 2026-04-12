@@ -27,6 +27,10 @@
 #include <math.h>
 //cairo UI
 #include "ui_backend.h"
+#define CAIRO_TABPANE_IMPLEMENTATION
+#include "cairo_tabpane.h"
+#define BIM_LISTVIEW_IMPLEMENTATION
+#include "ui/bim_listview.h"
 #define CAIRO_MENU_IMPLEMENTATION
 #include "cairo_menu.h"
 #define CAIRO_TRANSCRIPT_IMPLEMENTATION
@@ -382,6 +386,14 @@ void on_command(const char *text, void *userdata) {
    bim_db_raw_select(&(cv->db), text, bim_transcript_formatter,&tc);
 }
 
+static void on_tab_close(int idx, HWND content, void *ud)
+{
+    (void)ud;
+    if (!content) return;
+    BimListView *lv = ui_get_data(BimListView, content);
+    if (lv) blv_destroy(lv);   /* blv_destroy détruit le HWND */
+}
+
 /* ── WinMain ─────────────────────────────────────────────────────── */
 int WINAPI WinMain(HINSTANCE hi, HINSTANCE hp, LPSTR lp, int ns)
 {
@@ -416,7 +428,8 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE hp, LPSTR lp, int ns)
     ct_set_cb(ct, on_command, NULL);      
     /* Layout + toolbar + statusbar */
     g_layout = cl_create(parent, g_canvas);
-    cl_attach_transcript(g_layout, ct, 220);  // 220px initial
+    cl_attach_tabpane(g_layout, ct, 220, on_tab_close, NULL);
+    //cl_attach_transcript(g_layout, ct, 220);  // 220px initial
 
     cl_toolbar_add_sep(g_layout);
     cl_toolbar_add_icon(g_layout, TB_ZOOM_P,  icon_zoom_plus,  "Zoom plus" ,     CL_BTN_NORMAL);
