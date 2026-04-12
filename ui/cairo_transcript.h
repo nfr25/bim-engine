@@ -608,7 +608,7 @@ CairoTranscript *ct_create(HWND parent, int x, int y, int w, int h)
     ct->hwnd_input = CreateWindowEx(
         WS_EX_CLIENTEDGE,
         "EDIT", "",
-        WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN,
+        WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_AUTOHSCROLL | ES_WANTRETURN,
         x, input_y, w, CT_INPUT_H,
         parent, NULL, GetModuleHandle(NULL), NULL);
 

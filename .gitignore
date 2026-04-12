@@ -12,6 +12,9 @@ obj/
 *.pdb
 *.ilk
 *.idb
+scripting/jimtcl/*.o
+scripting/jimtcl/autosetup/*.o
+jim-config.h
 
 # --- Base de données (Fichiers locaux) ---
 *.db

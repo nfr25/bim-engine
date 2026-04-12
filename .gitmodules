@@ -1,0 +1,3 @@
+[submodule "scripting/jimtcl"]
+	path = scripting/jimtcl
+	url = https://github.com/msteveb/jimtcl.git

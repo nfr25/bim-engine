@@ -1,9 +1,10 @@
 CC      = gcc
 TARGET  = bim.exe
-SRCS    = bim.c
+SRCS    = bim.c jim_embed.c
 RES     = resources.res
 
 INCLUDES = -I ../sqlite -I ./ui -I ./container -I ./bim
+INCLUDES += -I ./scripting/jimtcl -I ./scripting/jimtcl/autosetup
 
 LDFLAGS  = -L ./lib -lsqlite3 -lm -lshlwapi -lgdi32 -luser32 -lcomctl32 \
            -lcairo -lcomdlg32 -lshp -ldwmapi 
@@ -12,6 +13,7 @@ LDFLAGS += $(shell pkg-config --libs librsvg-2.0 cairo)
 
 CFLAGS   = -std=gnu11 $(INCLUDES)
 CFLAGS += $(shell pkg-config --cflags librsvg-2.0 cairo)
+
 
 all: $(TARGET)
 

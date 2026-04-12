@@ -27,16 +27,18 @@
 #include <math.h>
 //cairo UI
 #include "ui_backend.h"
-#define CAIRO_TABPANE_IMPLEMENTATION
-#include "cairo_tabpane.h"
-#define BIM_LISTVIEW_IMPLEMENTATION
-#include "ui/bim_listview.h"
 #define CAIRO_MENU_IMPLEMENTATION
 #include "cairo_menu.h"
 #define CAIRO_TRANSCRIPT_IMPLEMENTATION
 #include "cairo_transcript.h"
+#define CAIRO_TABPANE_IMPLEMENTATION
+#include "cairo_tabpane.h"
 #define CAIRO_LAYOUT_IMPLEMENTATION
 #include "cairo_layout.h"
+#define BIM_LISTVIEW_IMPLEMENTATION
+#include "bim_listview.h"
+#define BIM_JIM_IMPLEMENTATION
+#include "scripting/bim_jim.h"
 #define CAIRO_STYLE_EDITOR_IMPLEMENTATION
 #include "cairo_style_editor.h"
 #define CAIRO_SYMBOL_PICKER_IMPLEMENTATION
@@ -97,6 +99,7 @@
 #define MN_ZOOM_F    33
 /* ── État application ────────────────────────────────────────────── */
 static CairoLayout *g_layout = NULL;
+static BimJim      *g_bj     = NULL;
 CairoMenu    *g_menu   = NULL;
 static char   g_status0[64] = "Prêt";
 static char   g_status2[64] = "X: —   Y: —";
@@ -288,6 +291,15 @@ static void * build_menu(void *ud)
     return g_menu;
 }
 
+/* ── Fermeture d'un tab dynamique ───────────────────────────────── */
+static void on_tab_close(int idx, HWND content, void *ud)
+{
+    (void)ud;
+    if (!content) return;
+    BimListView *lv = ui_get_data(BimListView, content);
+    if (lv) blv_destroy(lv);   /* blv_destroy détruit le HWND */
+}
+
 /* ── WndProc parent ──────────────────────────────────────────────── */
 static LRESULT CALLBACK ParentProc(HWND hwnd, UINT msg,
                                     WPARAM wp, LPARAM lp)
@@ -299,6 +311,7 @@ static LRESULT CALLBACK ParentProc(HWND hwnd, UINT msg,
     case WM_CTLCOLOREDIT:
         return ct_on_ctlcolor(g_layout->transcript, (HDC)wp, (HWND)lp);        
     case WM_DESTROY:
+        bj_destroy(g_bj);
         cm_destroy(g_menu);
         cl_destroy(g_layout);
         PostQuitMessage(0);
@@ -380,18 +393,34 @@ int bim_transcript_formatter(void *data, int argc, char **argv, char **azColName
 }
 
 void on_command(const char *text, void *userdata) {
-   TranscriptCtx tc = {0,0};
-   GuiCanvas *cv = gui_get_canvas_data(g_canvas);
-   ct_add(g_layout->transcript, CT_CMD, text);
-   bim_db_raw_select(&(cv->db), text, bim_transcript_formatter,&tc);
-}
+    GuiCanvas *cv = gui_get_canvas_data(g_canvas);
+    ct_add(g_layout->transcript, CT_CMD, text);
 
-static void on_tab_close(int idx, HWND content, void *ud)
-{
-    (void)ud;
-    if (!content) return;
-    BimListView *lv = ui_get_data(BimListView, content);
-    if (lv) blv_destroy(lv);   /* blv_destroy détruit le HWND */
+    /* Essayer TCL d'abord — fallback SQL si commande inconnue */
+    if (g_bj) {
+        int rc = Jim_Eval(bj_interp(g_bj), text);
+        const char *result = Jim_GetString(
+            Jim_GetResult(bj_interp(g_bj)), NULL);
+
+        if (rc == JIM_OK) {
+            /* Succès TCL — afficher le résultat si non vide */
+            if (result && result[0] != '\0')
+                ct_add(g_layout->transcript, CT_OK, result);
+        } else if (result && strstr(result, "invalid command")) {
+            /* Commande inconnue de Jim → fallback SQL */
+            TranscriptCtx tc = {0, 0};
+            bim_db_raw_select(&(cv->db), text,
+                              bim_transcript_formatter, &tc);
+        } else {
+            /* Vraie erreur TCL → afficher */
+            if (result && result[0] != '\0')
+                ct_add(g_layout->transcript, CT_ERR, result);
+        }
+    } else {
+        /* Jim non initialisé → SQL direct */
+        TranscriptCtx tc = {0, 0};
+        bim_db_raw_select(&(cv->db), text, bim_transcript_formatter, &tc);
+    }
 }
 
 /* ── WinMain ─────────────────────────────────────────────────────── */
@@ -429,7 +458,11 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE hp, LPSTR lp, int ns)
     /* Layout + toolbar + statusbar */
     g_layout = cl_create(parent, g_canvas);
     cl_attach_tabpane(g_layout, ct, 220, on_tab_close, NULL);
-    //cl_attach_transcript(g_layout, ct, 220);  // 220px initial
+
+    /* Interpréteur Jim TCL */
+    GuiCanvas *cv_jim = gui_get_canvas_data(g_canvas);
+    g_bj = bj_create(g_layout, g_canvas, cv_jim->db.handle);
+    bj_load_startup(g_bj);
 
     cl_toolbar_add_sep(g_layout);
     cl_toolbar_add_icon(g_layout, TB_ZOOM_P,  icon_zoom_plus,  "Zoom plus" ,     CL_BTN_NORMAL);

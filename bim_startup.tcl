@@ -1,0 +1,1 @@
+bim::log "BIM scripting ready"
