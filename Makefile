@@ -13,6 +13,7 @@ LDFLAGS += $(shell pkg-config --libs librsvg-2.0 cairo)
 
 CFLAGS   = -std=gnu11 $(INCLUDES)
 CFLAGS += $(shell pkg-config --cflags librsvg-2.0 cairo)
+CFLAGS += -g -O0
 
 
 all: $(TARGET)

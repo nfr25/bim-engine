@@ -133,8 +133,8 @@
 
 /* ── Hauteurs des zones (px) ─────────────────────────────────────── */
 #define CL_MENUBAR_H    24
-#define CL_TOOLBAR_H    38
-#define CL_STATUS_H     22
+#define CL_TOOLBAR_H    54
+#define CL_STATUS_H     32
 
 /* ── Flags boutons toolbar ───────────────────────────────────────── */
 #define CL_BTN_NORMAL   0x00

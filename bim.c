@@ -37,8 +37,6 @@
 #include "cairo_layout.h"
 #define BIM_LISTVIEW_IMPLEMENTATION
 #include "bim_listview.h"
-#define BIM_JIM_IMPLEMENTATION
-#include "scripting/bim_jim.h"
 #define CAIRO_STYLE_EDITOR_IMPLEMENTATION
 #include "cairo_style_editor.h"
 #define CAIRO_SYMBOL_PICKER_IMPLEMENTATION
@@ -64,6 +62,8 @@
 #include "bim_db_render.h"
 #include "bim_db.h"
 #include "bim_canvas.h"
+#define BIM_JIM_IMPLEMENTATION
+#include "scripting/bim_jim.h"
  
 
 #define IDI_APPICON 101
@@ -358,66 +358,77 @@ typedef struct {
 int bim_transcript_formatter(void *data, int argc, char **argv, char **azColName) {
     if (data == NULL)
     {
-       ct_add(g_layout->transcript, CT_ERR, argv[0]);  
+       /* argv[0] contient le message d'erreur SQLite — peut être NULL */
+       ct_add(g_layout->transcript, CT_ERR,
+              (argv && argv[0]) ? argv[0] : "SQL error");
        return 0;
     }
     TranscriptCtx *ctx = (TranscriptCtx *)data;
-    char buf[255]  ="\0";
-    char buf2[1024]="\0";
+    char buf[32]    = "";    /* colonne tronquée à 30 chars max          */
+    char buf2[1024] = "";    /* ligne complète — bornée                  */
 
-    // 1. Imprimer l'en-tête (noms des colonnes) seulement à la première ligne
+    /* 1. Header — noms des colonnes (une seule fois) */
     if (!ctx->header_printed) {
         for (int i = 0; i < argc; i++) {
-            sprintf(buf, "%-15s", azColName[i]); // Largeur fixe de 15 caractères
-            strcat(buf2, "|");
-            strcat(buf2, buf);   
+            snprintf(buf, sizeof buf, "%-15.15s",
+                     azColName[i] ? azColName[i] : "");
+            if (strlen(buf2) + strlen(buf) + 2 < sizeof buf2) {
+                strcat(buf2, "|");
+                strcat(buf2, buf);
+            }
         }
-        
         ct_add(g_layout->transcript, CT_OK, buf2);
-        ct_add(g_layout->transcript, CT_SEP, "");            // ── ligne fine ──
+        ct_add(g_layout->transcript, CT_SEP, "");
         buf2[0] = '\0';
         ctx->header_printed = 1;
     }
 
-    // 2. Imprimer les données de la ligne
+    /* 2. Données — valeurs tronquées à 30 chars max */
     for (int i = 0; i < argc; i++) {
-        sprintf(buf,"%-15s", argv[i] ? argv[i] : "NULL");
-        strcat(buf2, "|");
-        strcat(buf2, buf);   
+        snprintf(buf, sizeof buf, "%-15.15s",
+                 argv[i] ? argv[i] : "NULL");
+        if (strlen(buf2) + strlen(buf) + 2 < sizeof buf2) {
+            strcat(buf2, "|");
+            strcat(buf2, buf);
+        }
     }
     ct_add(g_layout->transcript, CT_OK, buf2);
 
     ctx->row_count++;
-
-    return 0; // 0 pour continuer vers la ligne suivante
+    return 0;
 }
 
 void on_command(const char *text, void *userdata) {
-    GuiCanvas *cv = gui_get_canvas_data(g_canvas);
     ct_add(g_layout->transcript, CT_CMD, text);
 
     /* Essayer TCL d'abord — fallback SQL si commande inconnue */
     if (g_bj) {
         int rc = Jim_Eval(bj_interp(g_bj), text);
-        const char *result = Jim_GetString(
-            Jim_GetResult(bj_interp(g_bj)), NULL);
 
         if (rc == JIM_OK) {
-            /* Succès TCL — afficher le résultat si non vide */
-            if (result && result[0] != '\0')
-                ct_add(g_layout->transcript, CT_OK, result);
-        } else if (result && strstr(result, "invalid command")) {
-            /* Commande inconnue de Jim → fallback SQL */
-            TranscriptCtx tc = {0, 0};
-            bim_db_raw_select(&(cv->db), text,
-                              bim_transcript_formatter, &tc);
+            /* Succès TCL — copier le résultat avant tout autre appel Jim */
+            const char *res = Jim_GetString(
+                Jim_GetResult(bj_interp(g_bj)), NULL);
+            if (res && res[0] != '\0')
+                ct_add(g_layout->transcript, CT_OK, res);
         } else {
-            /* Vraie erreur TCL → afficher */
-            if (result && result[0] != '\0')
-                ct_add(g_layout->transcript, CT_ERR, result);
+            /* Erreur Jim — copier le message avant tout autre appel */
+            const char *err = Jim_GetString(
+                Jim_GetResult(bj_interp(g_bj)), NULL);
+            if (err && strstr(err, "invalid command")) {
+                /* Commande inconnue → fallback SQL */
+                GuiCanvas *cv = gui_get_canvas_data(g_canvas);
+                TranscriptCtx tc = {0, 0};
+                bim_db_raw_select(&(cv->db), text,
+                                  bim_transcript_formatter, &tc);
+            } else if (err && err[0] != '\0') {
+                /* Vraie erreur TCL → afficher */
+                ct_add(g_layout->transcript, CT_ERR, err);
+            }
         }
     } else {
         /* Jim non initialisé → SQL direct */
+        GuiCanvas *cv = gui_get_canvas_data(g_canvas);
         TranscriptCtx tc = {0, 0};
         bim_db_raw_select(&(cv->db), text, bim_transcript_formatter, &tc);
     }

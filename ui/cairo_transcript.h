@@ -523,6 +523,14 @@ static LRESULT CALLBACK ct__edit_sub(HWND hwnd, UINT msg,
 {
     CairoTranscript *ct = (CairoTranscript*)GetWindowLongPtr(hwnd, GWLP_USERDATA);
 
+    /* Bloquer WM_CHAR pour  et 
+ — sinon ES_MULTILINE les insère
+     * même quand WM_KEYDOWN retourne 0.                              */
+    if (msg == WM_CHAR) {
+        if (wp == '\r' || wp == '\n' || wp == VK_RETURN)
+            return 0;
+    }
+
     if (msg == WM_KEYDOWN) {
         if (wp == VK_RETURN) {
             /* Entrée → callback */
@@ -608,7 +616,7 @@ CairoTranscript *ct_create(HWND parent, int x, int y, int w, int h)
     ct->hwnd_input = CreateWindowEx(
         WS_EX_CLIENTEDGE,
         "EDIT", "",
-        WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_AUTOHSCROLL | ES_WANTRETURN,
+        WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
         x, input_y, w, CT_INPUT_H,
         parent, NULL, GetModuleHandle(NULL), NULL);
 

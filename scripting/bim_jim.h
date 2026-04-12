@@ -47,8 +47,9 @@
 #define BIM_JIM_H
 
 #include <jim.h>
-#include <sqlite3.h>
 #include <stdio.h>
+/* sqlite3 utilisé comme void* pour éviter les conflits de headers
+ * entre les unités de compilation bim.c et jim_embed.c           */
 #include <stdlib.h>
 #include <string.h>
 
@@ -81,6 +82,7 @@ typedef struct BimJim_ BimJim;
 
 /* ── API publique ───────────────────────────────────────────────── */
 BimJim *bj_create      (CairoLayout *layout, HWND canvas, void *db);
+void    bj_set_context (CairoLayout *layout, HWND canvas);
 void    bj_destroy     (BimJim *bj);
 
 /* Évaluer une chaîne TCL — affiche résultat/erreur dans le transcript */
@@ -103,17 +105,27 @@ Jim_Interp *bj_interp  (BimJim *bj);
 /* ── Structure interne ──────────────────────────────────────────── */
 struct BimJim_ {
     Jim_Interp  *interp;
-    CairoLayout *layout;
-    HWND         canvas;
-    sqlite3     *db;
+    /* layout, canvas et db sont des globaux de bim.c —
+     * pas besoin de les dupliquer ici                  */
 };
 
 /* ── Accès au transcript via le layout ──────────────────────────── */
+/* Pointeurs opaques vers le layout et le canvas —
+ * initialisés par bj_set_context() depuis bim.c
+ * après que les types sont définis.                */
+static void *bj__g_layout = NULL;
+static void *bj__g_canvas = NULL;
+
+/* Macros d'accès avec cast */
+#define BJ_LAYOUT ((CairoLayout*)bj__g_layout)
+#define BJ_CANVAS ((HWND)bj__g_canvas)
+
 static void bj__log(BimJim *bj, int type, const char *msg)
 {
+    (void)bj;
 #if BJ_HAS_LAYOUT && CL_HAS_TRANSCRIPT
-    if (bj->layout && bj->layout->transcript)
-        ct_add(bj->layout->transcript, type, msg);
+    if (BJ_LAYOUT && BJ_LAYOUT->transcript)
+        ct_add(BJ_LAYOUT->transcript, type, msg);
     else
         fprintf(stderr, "[bim::log] %s\n", msg);
 #else
@@ -171,11 +183,15 @@ static int bj__cmd_eval(Jim_Interp *interp, int argc, Jim_Obj *const *argv)
 {
     if (argc != 2) { Jim_WrongNumArgs(interp, 1, argv, "sql"); return JIM_ERR; }
     BimJim *bj = Jim_CmdPrivData(interp);
-    if (!bj->db) { bj__err(interp, "no database"); return JIM_ERR; }
-
+    (void)bj;
+    GuiCanvas *bj_cv = gui_get_canvas_data(BJ_CANVAS);
+    if (!bj_cv || !bj_cv->db.handle) {
+        bj__err(interp, "no database");
+        return JIM_ERR;
+    }
     const char *sql = Jim_GetString(argv[1], NULL);
     char *errmsg = NULL;
-    int rc = sqlite3_exec(bj->db, sql, NULL, NULL, &errmsg);
+    int rc = sqlite3_exec(bj_cv->db.handle, sql, NULL, NULL, &errmsg);
     if (rc != SQLITE_OK) {
         char buf[512];
         snprintf(buf, sizeof buf, "SQL error: %s", errmsg ? errmsg : "?");
@@ -198,36 +214,57 @@ static int bj__cmd_query(Jim_Interp *interp, int argc, Jim_Obj *const *argv)
         return JIM_ERR;
     }
     BimJim *bj = Jim_CmdPrivData(interp);
-    if (!bj->db || !bj->layout) {
-        bj__err(interp, "no database or layout");
+    (void)bj;
+
+    if (!BJ_LAYOUT) {
+        bj__err(interp, "no layout");
+        return JIM_ERR;
+    }
+    GuiCanvas *bj_cv2 = gui_get_canvas_data(BJ_CANVAS);
+    if (!bj_cv2 || !bj_cv2->db.handle) {
+        bj__err(interp, "no database");
         return JIM_ERR;
     }
 
     const char *sql   = Jim_GetString(argv[1], NULL);
     const char *label = (argc == 3) ? Jim_GetString(argv[2], NULL) : "Query";
 
-    CairoTabPane *tp = cl_tabpane_get(bj->layout);
+    CairoTabPane *tp = cl_tabpane_get(BJ_LAYOUT);
     if (!tp) {
         bj__err(interp, "no tabpane");
         return JIM_ERR;
     }
 
+    /* Vérifier que le tabpane HWND est valide */
+    if (!tp->hwnd || !IsWindow(tp->hwnd)) {
+        bj__err(interp, "tabpane hwnd invalid");
+        return JIM_ERR;
+    }
+
+    /* S'assurer que le splitter est ouvert */
+    if (!BJ_LAYOUT->transcript_vis)
+        cl_show_transcript(BJ_LAYOUT);
+
     /* Créer la listview dans le tabpane */
-    BimListView *lv = blv_create(tp->hwnd, 0, 0, 1, 1, bj->db);
+    bj__log(bj, CT_INFO, "creating listview...");
+    BimListView *lv = blv_create(tp->hwnd, 0, 0, 1, 1, bj_cv2->db.handle);
     if (!lv) {
         bj__err(interp, "failed to create listview");
         return JIM_ERR;
     }
+
+    bj__log(bj, CT_INFO, "setting query...");
     blv_set_query(lv, sql);
 
     /* Ouvrir le tab */
-    int idx = cl_tabpane_add(bj->layout, label, blv_get_hwnd(lv));
+    bj__log(bj, CT_INFO, "adding tab...");
+    int idx = cl_tabpane_add(BJ_LAYOUT, label, blv_get_hwnd(lv));
     if (idx < 0) {
         blv_destroy(lv);
         bj__err(interp, "failed to add tab");
         return JIM_ERR;
     }
-    cl_tabpane_select(bj->layout, idx);
+    cl_tabpane_select(BJ_LAYOUT, idx);
 
     /* Log dans le transcript */
     char buf[256];
@@ -293,24 +330,28 @@ static void bj__register_commands(BimJim *bj)
    API PUBLIQUE — IMPLÉMENTATION
    ═══════════════════════════════════════════════════════════════════ */
 
+void bj_set_context(CairoLayout *layout, HWND canvas)
+{
+    bj__g_layout = (void*)layout;
+    bj__g_canvas = (void*)canvas;
+}
+
 BimJim *bj_create(CairoLayout *layout, HWND canvas, void *db)
 {
+    /* layout, canvas et db sont ignorés ici —
+     * les commandes bim::* accèdent aux globaux de bim.c directement */
+    bj_set_context(layout, canvas);
+    (void)db;
+
     BimJim *bj = (BimJim*)calloc(1, sizeof *bj);
     if (!bj) return NULL;
 
-    bj->layout = layout;
-    bj->canvas = canvas;
-    bj->db     = (sqlite3*)db;
-
-    /* Créer l'interpréteur Jim */
     bj->interp = Jim_CreateInterp();
     if (!bj->interp) { free(bj); return NULL; }
 
-    /* Initialiser les commandes de base Jim */
     Jim_RegisterCoreCommands(bj->interp);
     Jim_InitStaticExtensions(bj->interp);
 
-    /* Enregistrer les commandes bim:: */
     bj__register_commands(bj);
 
     return bj;
@@ -419,7 +460,7 @@ Jim_Interp *bj_interp(BimJim *bj)
  *
  *  3. WinMain — après cl_attach_tabpane
  *
- *     GuiCanvas *cv = gui_get_canvas_data(g_canvas);
+ *     GuiCanvas *cv = gui_get_canvas_data(BJ_CANVAS);
  *     g_bj = bj_create(g_layout, g_canvas, cv->db.handle);
  *     bj_load_startup(g_bj);
  *
