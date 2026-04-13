@@ -50,6 +50,7 @@
 #include "stb_ds.h"
 //bim itself
 #include "bim_db_types.h"
+#include "bim_db_ports.h"
 #include "bim_db_extent.h"
 #include "bim_db_schema.h"
 #include "bim_db_svg.h"

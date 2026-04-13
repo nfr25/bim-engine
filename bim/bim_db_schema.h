@@ -44,7 +44,8 @@ static int bim_db_init_schema(BimDB *db) {
     " name TEXT NOT NULL, "
     " category TEXT, "
     " svg_data TEXT NOT NULL, "
-    " hash TEXT UNIQUE "
+    " hash TEXT UNIQUE, "
+    " ports_mask INTEGER DEFAULT 255 "
     "); "       
 
     "CREATE TABLE IF NOT EXISTS bim_entities ( "
@@ -65,6 +66,7 @@ static int bim_db_init_schema(BimDB *db) {
     "  rotation REAL DEFAULT 0, "    
     "  is_node INTEGER DEFAULT 1, "
     "  use_count INTEGER DEFAULT 1, "
+    "  ports_active INTEGER DEFAULT 255, "
     "  FOREIGN KEY(symbol_id) REFERENCES bim_svg_library(id) ON DELETE SET NULL "    
     "); "
 
@@ -87,16 +89,6 @@ static int bim_db_init_schema(BimDB *db) {
     "CREATE TABLE IF NOT EXISTS bim_selection ( "
     "  entity_id INTEGER PRIMARY KEY REFERENCES bim_entities(id) ON DELETE CASCADE "
     "); "
-
-    "CREATE TRIGGER IF NOT EXISTS trg_notify_select_insert "
-    "AFTER INSERT ON bim_selection BEGIN "
-    "  SELECT bim_notify('EV_SELECT'); "
-    "END; "
-
-    "CREATE TRIGGER IF NOT EXISTS trg_notify_select_delete "
-    "AFTER DELETE ON bim_selection BEGIN "
-    "  SELECT bim_notify('EV_SELECT'); "
-    "END; "
 
     "CREATE TRIGGER IF NOT EXISTS trg_cleanup_rtree_on_entity_delete "
     "AFTER DELETE ON bim_entities "
@@ -341,6 +333,30 @@ void bim_sql_inside_func(sqlite3_context *context, int argc, sqlite3_value **arg
     sqlite3_result_int(context, inside);
 }
 
+/* ── Constantes ports de connexion (bitfield 8 directions) ─────────
+ *
+ *   NW  N  NE
+ *    W  ●  E
+ *   SW  S  SE
+ *
+ * bim_svg_library.ports_mask  = ports disponibles par défaut du symbole
+ * bim_vertices.ports_active   = ports actifs pour cette instance
+ * ─────────────────────────────────────────────────────────────────── */
+#define BIM_PORT_N    0x01
+#define BIM_PORT_NE   0x02
+#define BIM_PORT_E    0x04
+#define BIM_PORT_SE   0x08
+#define BIM_PORT_S    0x10
+#define BIM_PORT_SW   0x20
+#define BIM_PORT_W    0x40
+#define BIM_PORT_NW   0x80
+#define BIM_PORT_ALL  0xFF
+#define BIM_PORT_NONE 0x00
+/* Paires courantes */
+#define BIM_PORT_EW   (BIM_PORT_E | BIM_PORT_W)    /* vanne, tronçon  */
+#define BIM_PORT_NS   (BIM_PORT_N | BIM_PORT_S)    /* vertical        */
+#define BIM_PORT_4    (BIM_PORT_EW | BIM_PORT_NS)  /* croix 4 ports   */
+
 /* ── Système de notification DB → application ───────────────────────
  * Permet à la DB d'émettre des événements via des triggers SQLite.
  * L'application enregistre un callback via bim_db_set_notify_cb().
@@ -375,12 +391,6 @@ static void bim__notify_func(sqlite3_context *ctx, int argc,
 }
 
 void bim_db_register_user_fct(BimDB *db){
-    /* Fonction bim_notify — appelée par les triggers */
-    sqlite3_create_function(
-        db->handle, "bim_notify", 1, SQLITE_UTF8,
-        NULL, bim__notify_func, NULL, NULL
-    );
-
     sqlite3_create_function(
     db->handle,               // Handle de la base
     "BIM_DISTANCE",   // Nom de la fonction dans le SQL
