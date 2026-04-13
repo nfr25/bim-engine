@@ -88,6 +88,16 @@ static int bim_db_init_schema(BimDB *db) {
     "  entity_id INTEGER PRIMARY KEY REFERENCES bim_entities(id) ON DELETE CASCADE "
     "); "
 
+    "CREATE TRIGGER IF NOT EXISTS trg_notify_select_insert "
+    "AFTER INSERT ON bim_selection BEGIN "
+    "  SELECT bim_notify('EV_SELECT'); "
+    "END; "
+
+    "CREATE TRIGGER IF NOT EXISTS trg_notify_select_delete "
+    "AFTER DELETE ON bim_selection BEGIN "
+    "  SELECT bim_notify('EV_SELECT'); "
+    "END; "
+
     "CREATE TRIGGER IF NOT EXISTS trg_cleanup_rtree_on_entity_delete "
     "AFTER DELETE ON bim_entities "
     "BEGIN "
@@ -331,7 +341,46 @@ void bim_sql_inside_func(sqlite3_context *context, int argc, sqlite3_value **arg
     sqlite3_result_int(context, inside);
 }
 
+/* ── Système de notification DB → application ───────────────────────
+ * Permet à la DB d'émettre des événements via des triggers SQLite.
+ * L'application enregistre un callback via bim_db_set_notify_cb().
+ * Si NULL → bim_notify() dans SQL ne fait rien.
+ *
+ * Usage SQL :
+ *   SELECT bim_notify('EV_SELECT');
+ *
+ * Triggers automatiques sur bim_selection :
+ *   INSERT/DELETE → publie 'EV_SELECT'
+ * ──────────────────────────────────────────────────────────────────── */
+
+typedef void (*BimNotifyCb)(const char *event, void *userdata);
+
+static BimNotifyCb bim__notify_cb = NULL;
+static void       *bim__notify_ud = NULL;
+
+void bim_db_set_notify_cb(BimNotifyCb cb, void *ud)
+{
+    bim__notify_cb = cb;
+    bim__notify_ud = ud;
+}
+
+static void bim__notify_func(sqlite3_context *ctx, int argc,
+                              sqlite3_value **argv)
+{
+    if (bim__notify_cb && argc > 0) {
+        const char *event = (const char*)sqlite3_value_text(argv[0]);
+        if (event) bim__notify_cb(event, bim__notify_ud);
+    }
+    sqlite3_result_null(ctx);
+}
+
 void bim_db_register_user_fct(BimDB *db){
+    /* Fonction bim_notify — appelée par les triggers */
+    sqlite3_create_function(
+        db->handle, "bim_notify", 1, SQLITE_UTF8,
+        NULL, bim__notify_func, NULL, NULL
+    );
+
     sqlite3_create_function(
     db->handle,               // Handle de la base
     "BIM_DISTANCE",   // Nom de la fonction dans le SQL

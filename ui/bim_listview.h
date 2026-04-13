@@ -63,6 +63,7 @@
 #include <cairo/cairo.h>
 #include <cairo/cairo-win32.h>
 #include <sqlite3.h>
+#include <uxtheme.h>
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -262,6 +263,8 @@ BimListView *blv_create(HWND parent, int x, int y, int w, int h, sqlite3 *db)
     /* scrollbar verticale native */
     SetScrollRange(lv->hwnd, SB_VERT, 0, 0, FALSE);
     ShowScrollBar(lv->hwnd, SB_VERT, TRUE);
+    /* Scrollbar dark mode */
+    SetWindowTheme(lv->hwnd, L"DarkMode_Explorer", NULL);
 
     return lv;
 }

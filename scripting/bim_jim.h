@@ -77,12 +77,22 @@ typedef struct CairoTabPane_ CairoTabPane;
 #  define BJ_HAS_LISTVIEW 0
 #endif
 
+/* ── Query sélection — jointure complète ───────────────────────── */
+#define BJ_SELECTION_SQL     "SELECT e.id, e.type, l.name AS layer, "     "       e.layer_id, e.style_id "     "FROM bim_selection s "     "JOIN bim_entities e ON e.id = s.entity_id "     "JOIN bim_layers   l ON l.id = e.layer_id"
+
+#define BJ_SELECTION_LABEL "Sélection"
+
 /* ── Structure principale ───────────────────────────────────────── */
 typedef struct BimJim_ BimJim;
 
 /* ── API publique ───────────────────────────────────────────────── */
 BimJim *bj_create      (CairoLayout *layout, HWND canvas, void *db);
 void    bj_set_context (CairoLayout *layout, HWND canvas);
+void    bj_publish     (BimJim *bj, const char *event);
+void    bj_publish_str (BimJim *bj, const char *event, const char *data);
+
+/* Commandes de haut niveau exposées aussi en C pour bim.c */
+void    bj_open_selection(BimJim *bj);   /* ouvre/rafraîchit le tab Sélection */
 void    bj_destroy     (BimJim *bj);
 
 /* Évaluer une chaîne TCL — affiche résultat/erreur dans le transcript */
@@ -287,6 +297,80 @@ static int bj__cmd_query(Jim_Interp *interp, int argc, Jim_Obj *const *argv)
 
 #endif /* BJ_HAS_LAYOUT && BJ_HAS_LISTVIEW */
 
+/* ── bim::open_selection ────────────────────────────────────────── *
+ * Ouvre le tab Sélection s'il n'existe pas encore,
+ * ou le rafraîchit s'il est déjà ouvert.
+ * L'index du tab est mémorisé dans bim::_sel_tab côté TCL.        */
+static int bj__cmd_open_selection(Jim_Interp *interp, int argc,
+                                   Jim_Obj *const *argv)
+{
+    (void)argc; (void)argv;
+    BimJim *bj = Jim_CmdPrivData(interp);
+    (void)bj;
+
+    if (!BJ_LAYOUT) { bj__err(interp, "no layout"); return JIM_ERR; }
+
+    CairoTabPane *tp = cl_tabpane_get(BJ_LAYOUT);
+    if (!tp) { bj__err(interp, "no tabpane"); return JIM_ERR; }
+
+    /* Vérifier si le tab Sélection existe déjà via bim::_sel_tab */
+    Jim_Obj *sel_var = Jim_GetVariableStr(interp, "bim::_sel_tab",
+                                          JIM_NONE);
+    if (sel_var) {
+        /* Tab déjà ouvert — récupérer l'index et rafraîchir */
+        long idx = 0;
+        Jim_GetLong(interp, sel_var, &idx);
+        HWND hc = tp_tab_get_content(tp, (int)idx);
+        if (hc && IsWindow(hc)) {
+            BimListView *lv = ui_get_data(BimListView, hc);
+            if (lv) {
+                blv_refresh(lv);
+                tp_tab_select(tp, (int)idx);
+                Jim_SetResultInt(interp, (int)idx);
+                return JIM_OK;
+            }
+        }
+        /* Tab fermé entre-temps — on en recrée un */
+        Jim_UnsetVariable(interp,
+            Jim_NewStringObj(interp, "bim::_sel_tab", -1), JIM_NONE);
+    }
+
+    /* Créer la listview */
+    GuiCanvas *cv = gui_get_canvas_data(BJ_CANVAS);
+    if (!cv || !cv->db.handle) {
+        bj__err(interp, "no database");
+        return JIM_ERR;
+    }
+
+    if (!BJ_LAYOUT->transcript_vis)
+        cl_show_transcript(BJ_LAYOUT);
+
+    BimListView *lv = blv_create(tp->hwnd, 0, 0, 1, 1, cv->db.handle);
+    if (!lv) { bj__err(interp, "failed to create listview"); return JIM_ERR; }
+
+    blv_set_query(lv, BJ_SELECTION_SQL);
+
+    int idx = cl_tabpane_add(BJ_LAYOUT, BJ_SELECTION_LABEL,
+                              blv_get_hwnd(lv));
+    if (idx < 0) {
+        blv_destroy(lv);
+        bj__err(interp, "failed to add tab");
+        return JIM_ERR;
+    }
+    cl_tabpane_select(BJ_LAYOUT, idx);
+
+    /* Mémoriser l'index dans bim::_sel_tab */
+    Jim_SetVariableStr(interp, "bim::_sel_tab",
+                       Jim_NewIntObj(interp, idx));
+
+    char buf[64];
+    snprintf(buf, sizeof buf, "%d entités", blv_row_count(lv));
+    bj__log(bj, CT_INFO, buf);
+
+    Jim_SetResultInt(interp, idx);
+    return JIM_OK;
+}
+
 /* ── bim::layer ?idx? ───────────────────────────────────────────── */
 static int bj__cmd_layer(Jim_Interp *interp, int argc, Jim_Obj *const *argv)
 {
@@ -320,15 +404,72 @@ static void bj__register_commands(BimJim *bj)
     Jim_CreateCommand(i, "bim::error", bj__cmd_error, bj, NULL);
     Jim_CreateCommand(i, "bim::eval",  bj__cmd_eval,  bj, NULL);
     Jim_CreateCommand(i, "bim::query", bj__cmd_query, bj, NULL);
-    Jim_CreateCommand(i, "bim::layer", bj__cmd_layer, bj, NULL);
+    Jim_CreateCommand(i, "bim::layer",          bj__cmd_layer,          bj, NULL);
+    Jim_CreateCommand(i, "bim::open_selection", bj__cmd_open_selection, bj, NULL);
 
     /* variable globale db_path accessible depuis les scripts */
     Jim_Eval(i, "set bim::version \"0.1\"");
+
+    /* ── Système publish/subscribe ────────────────────────────────
+     * bim::subscribe event script  — s'abonner à un événement
+     * bim::revoke    event script  — se désabonner
+     * bim::publish   event ?data?  — publier (appelé depuis C)
+     * ──────────────────────────────────────────────────────────── */
+    /* Pub/sub en TCL pur — noms sans bim:: pour éviter le conflit
+     * avec les commandes C enregistrées dans le namespace bim::    */
+    Jim_Eval(i,
+        "set _bim_subs [dict create]\n"
+        "proc bim::subscribe {event script} {\n"
+        "    global _bim_subs\n"
+        "    dict lappend _bim_subs $event $script\n"
+        "}\n"
+        "proc bim::revoke {event script} {\n"
+        "    global _bim_subs\n"
+        "    if {[dict exists $_bim_subs $event]} {\n"
+        "        set lst [dict get $_bim_subs $event]\n"
+        "        set idx [lsearch -exact $lst $script]\n"
+        "        if {$idx >= 0} {\n"
+        "            dict set _bim_subs $event [lreplace $lst $idx $idx]\n"
+        "        }\n"
+        "    }\n"
+        "}\n"
+        "proc _bim_publish {event {data {}}} {\n"
+        "    global _bim_subs\n"
+        "    if {[dict exists $_bim_subs $event]} {\n"
+        "        foreach script [dict get $_bim_subs $event] {\n"
+        "            catch {uplevel #0 $script}\n"
+        "        }\n"
+        "    }\n"
+        "}\n"
+    );
 }
 
 /* ═══════════════════════════════════════════════════════════════════
    API PUBLIQUE — IMPLÉMENTATION
    ═══════════════════════════════════════════════════════════════════ */
+
+void bj_open_selection(BimJim *bj)
+{
+    if (!bj) return;
+    Jim_Eval(bj->interp, "bim::open_selection");
+}
+
+void bj_publish(BimJim *bj, const char *event)
+{
+    if (!bj || !event) return;
+    char cmd[256];
+    snprintf(cmd, sizeof cmd, "_bim_publish %s", event);
+    Jim_Eval(bj->interp, cmd);
+}
+
+void bj_publish_str(BimJim *bj, const char *event, const char *data)
+{
+    if (!bj || !event) return;
+    char cmd[512];
+    snprintf(cmd, sizeof cmd, "_bim_publish %s {%s}",
+             event, data ? data : "");
+    Jim_Eval(bj->interp, cmd);
+}
 
 void bj_set_context(CairoLayout *layout, HWND canvas)
 {

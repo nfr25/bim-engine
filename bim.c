@@ -300,6 +300,14 @@ static void on_tab_close(int idx, HWND content, void *ud)
     if (lv) blv_destroy(lv);   /* blv_destroy détruit le HWND */
 }
 
+/* ── Callback notification DB → Jim ─────────────────────────────── */
+static void on_bim_notify(const char *event, void *ud)
+{
+    (void)ud;
+    printf("on bim_notify\n");
+    if (g_bj) bj_publish(g_bj, event);
+}
+
 /* ── WndProc parent ──────────────────────────────────────────────── */
 static LRESULT CALLBACK ParentProc(HWND hwnd, UINT msg,
                                     WPARAM wp, LPARAM lp)
@@ -474,6 +482,8 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE hp, LPSTR lp, int ns)
     GuiCanvas *cv_jim = gui_get_canvas_data(g_canvas);
     g_bj = bj_create(g_layout, g_canvas, cv_jim->db.handle);
     bj_load_startup(g_bj);
+    /* Connecter les notifications DB → Jim */
+    bim_db_set_notify_cb(on_bim_notify, NULL);
 
     cl_toolbar_add_sep(g_layout);
     cl_toolbar_add_icon(g_layout, TB_ZOOM_P,  icon_zoom_plus,  "Zoom plus" ,     CL_BTN_NORMAL);
