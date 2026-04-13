@@ -78,7 +78,20 @@ typedef struct CairoTabPane_ CairoTabPane;
 #endif
 
 /* ── Query sélection — jointure complète ───────────────────────── */
-#define BJ_SELECTION_SQL     "SELECT e.id, e.type, l.name AS layer, "     "       e.layer_id, e.style_id "     "FROM bim_selection s "     "JOIN bim_entities e ON e.id = s.entity_id "     "JOIN bim_layers   l ON l.id = e.layer_id"
+#define BJ_ENTITIES_SQL \
+    "SELECT e.id, e.type, l.name AS layer, " \
+    "       e.layer_id, e.style_id " \
+    "FROM bim_entities e " \
+    "JOIN bim_layers l ON l.id = e.layer_id"
+
+#define BJ_ENTITIES_LABEL "Entités"
+
+#define BJ_SELECTION_SQL \
+    "SELECT e.id, e.type, l.name AS layer, " \
+    "       e.layer_id, e.style_id " \
+    "FROM bim_selection s " \
+    "JOIN bim_entities e ON e.id = s.entity_id " \
+    "JOIN bim_layers   l ON l.id = e.layer_id"
 
 #define BJ_SELECTION_LABEL "Sélection"
 
@@ -93,6 +106,7 @@ void    bj_publish_str (BimJim *bj, const char *event, const char *data);
 
 /* Commandes de haut niveau exposées aussi en C pour bim.c */
 void    bj_open_selection(BimJim *bj);   /* ouvre/rafraîchit le tab Sélection */
+void    bj_open_entities (BimJim *bj);   /* ouvre le tab Entités              */
 void    bj_destroy     (BimJim *bj);
 
 /* Évaluer une chaîne TCL — affiche résultat/erreur dans le transcript */
@@ -125,6 +139,7 @@ struct BimJim_ {
  * après que les types sont définis.                */
 static void *bj__g_layout = NULL;
 static void *bj__g_canvas = NULL;
+static Jim_Interp *bj__interp = NULL;  /* interpréteur global — stable */
 
 /* Macros d'accès avec cast */
 #define BJ_LAYOUT ((CairoLayout*)bj__g_layout)
@@ -371,6 +386,105 @@ static int bj__cmd_open_selection(Jim_Interp *interp, int argc,
     return JIM_OK;
 }
 
+/* ── Fonction appelée depuis le callback double-clic ────────────── */
+static void bj__list_dbl_select(const char *id_val)
+{
+    if (!bj__interp || !id_val) return;
+
+    /* Stocker l'id et publier EV_LIST_DBL */
+    char cmd[256];
+    snprintf(cmd, sizeof cmd,
+             "set _bim_dbl_id %s ; _bim_publish EV_LIST_DBL", id_val);
+    Jim_Eval(bj__interp, cmd);
+}
+
+/* ── Callback double-clic listview ──────────────────────────────── *
+ * Appelé par blv quand l'utilisateur double-clique une ligne.
+ * Publie EV_LIST_DBL et stocke l'id dans _bim_dbl_id.            */
+static void bj__on_list_dbl(int row, int col_count,
+                             const char **col_names,
+                             const char **values, void *ud)
+{
+    (void)row; (void)ud;
+
+    /* Trouver la colonne "id" */
+    const char *id_val = NULL;
+    for (int i = 0; i < col_count; i++) {
+        if (col_names[i] && strcmp(col_names[i], "id") == 0) {
+            id_val = values[i];
+            break;
+        }
+    }
+
+    /* Appeler la fonction d'action via l'interpréteur global */
+    bj__list_dbl_select(id_val);
+}
+
+/* ── bim::entities ───────────────────────────────────────────────── *
+ * Ouvre un tab listview sur bim_entities JOIN bim_layers.
+ * Double-clic → publie EV_LIST_DBL avec l'id de l'entité.         */
+static int bj__cmd_entities(Jim_Interp *interp, int argc,
+                              Jim_Obj *const *argv)
+{
+    (void)argc; (void)argv;
+    BimJim *bj = Jim_CmdPrivData(interp);
+
+    if (!BJ_LAYOUT) { bj__err(interp, "no layout"); return JIM_ERR; }
+
+    CairoTabPane *tp = cl_tabpane_get(BJ_LAYOUT);
+    if (!tp) { bj__err(interp, "no tabpane"); return JIM_ERR; }
+
+    GuiCanvas *cv = gui_get_canvas_data(BJ_CANVAS);
+    if (!cv || !cv->db.handle) {
+        bj__err(interp, "no database"); return JIM_ERR;
+    }
+
+    if (!BJ_LAYOUT->transcript_vis)
+        cl_show_transcript(BJ_LAYOUT);
+
+    BimListView *lv = blv_create(tp->hwnd, 0, 0, 1, 1, cv->db.handle);
+    if (!lv) { bj__err(interp, "failed to create listview"); return JIM_ERR; }
+
+    blv_set_query(lv, BJ_ENTITIES_SQL);
+    /* Brancher le double-clic → EV_LIST_DBL */
+    blv_set_cb(lv, bj__on_list_dbl, NULL, bj);
+
+    int idx = cl_tabpane_add(BJ_LAYOUT, BJ_ENTITIES_LABEL,
+                              blv_get_hwnd(lv));
+    if (idx < 0) {
+        blv_destroy(lv);
+        bj__err(interp, "failed to add tab");
+        return JIM_ERR;
+    }
+    cl_tabpane_select(BJ_LAYOUT, idx);
+
+    char buf[64];
+    snprintf(buf, sizeof buf, "%d entités", blv_row_count(lv));
+    bj__log(bj, CT_INFO, buf);
+
+    Jim_SetResultInt(interp, idx);
+    return JIM_OK;
+}
+
+/* ── bim::refresh_graphic ────────────────────────────────────────── *
+ * Force le redessinage du canvas.                                   */
+static int bj__cmd_refresh_graphic(Jim_Interp *interp, int argc,
+                                    Jim_Obj *const *argv)
+{
+    (void)argc; (void)argv;
+    BimJim *bj = Jim_CmdPrivData(interp);
+    (void)bj;
+
+    GuiCanvas *cv = gui_get_canvas_data(BJ_CANVAS);
+    if (!cv) { bj__err(interp, "no canvas"); return JIM_ERR; }
+
+    cv->cache_valid = false;
+    InvalidateRect(cv->hwnd, NULL, TRUE);
+
+    bj__ok(interp, "");
+    return JIM_OK;
+}
+
 /* ── bim::layer ?idx? ───────────────────────────────────────────── */
 static int bj__cmd_layer(Jim_Interp *interp, int argc, Jim_Obj *const *argv)
 {
@@ -404,8 +518,10 @@ static void bj__register_commands(BimJim *bj)
     Jim_CreateCommand(i, "bim::error", bj__cmd_error, bj, NULL);
     Jim_CreateCommand(i, "bim::eval",  bj__cmd_eval,  bj, NULL);
     Jim_CreateCommand(i, "bim::query", bj__cmd_query, bj, NULL);
-    Jim_CreateCommand(i, "bim::layer",          bj__cmd_layer,          bj, NULL);
-    Jim_CreateCommand(i, "bim::open_selection", bj__cmd_open_selection, bj, NULL);
+    Jim_CreateCommand(i, "bim::layer",           bj__cmd_layer,           bj, NULL);
+    Jim_CreateCommand(i, "bim::open_selection",  bj__cmd_open_selection,  bj, NULL);
+    Jim_CreateCommand(i, "bim::entities",         bj__cmd_entities,         bj, NULL);
+    Jim_CreateCommand(i, "bim::refresh_graphic",  bj__cmd_refresh_graphic,  bj, NULL);
 
     /* variable globale db_path accessible depuis les scripts */
     Jim_Eval(i, "set bim::version \"0.1\"");
@@ -454,6 +570,12 @@ void bj_open_selection(BimJim *bj)
     Jim_Eval(bj->interp, "bim::open_selection");
 }
 
+void bj_open_entities(BimJim *bj)
+{
+    if (!bj) return;
+    Jim_Eval(bj->interp, "bim::entities");
+}
+
 void bj_publish(BimJim *bj, const char *event)
 {
     if (!bj || !event) return;
@@ -477,6 +599,12 @@ void bj_set_context(CairoLayout *layout, HWND canvas)
     bj__g_canvas = (void*)canvas;
 }
 
+/* Appelé depuis bj_create après Jim_CreateInterp */
+static void bj__set_interp(Jim_Interp *interp)
+{
+    bj__interp = interp;
+}
+
 BimJim *bj_create(CairoLayout *layout, HWND canvas, void *db)
 {
     /* layout, canvas et db sont ignorés ici —
@@ -489,6 +617,7 @@ BimJim *bj_create(CairoLayout *layout, HWND canvas, void *db)
 
     bj->interp = Jim_CreateInterp();
     if (!bj->interp) { free(bj); return NULL; }
+    bj__set_interp(bj->interp);   /* mémoriser pour les callbacks */
 
     Jim_RegisterCoreCommands(bj->interp);
     Jim_InitStaticExtensions(bj->interp);

@@ -234,8 +234,8 @@ static void blv__register_class(void)
     static int done = 0;
     if (done) return;
     done = 1;
-    ui_register_class("BIM_ListView", blv__wnd_proc, 0,
-                      LoadCursor(NULL, IDC_ARROW));
+    ui_register_class("BIM_ListView", blv__wnd_proc, CS_DBLCLKS,
+                  LoadCursor(NULL, IDC_ARROW));
 }
 
 /* ── Création ────────────────────────────────────────────────────────── */
